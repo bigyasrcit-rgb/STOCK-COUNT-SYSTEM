@@ -29,7 +29,9 @@ const SPEC=Object.freeze({
   epoch:'2026-07-19T02:39:21.626Z',
   scanDataSize:5917,
   completed:1937,
-  statuses:Object.freeze({pending:3980,pass:1687,stock_adjustment:215,audit:35})
+  statuses:Object.freeze({pending:3980,pass:1687,stock_adjustment:215,audit:35}),
+  cloudItemStatuses:Object.freeze({pass:1687,stock_adjustment:215,audit:35}),
+  staleBlobScanDataSize:328
 });
 const CONFIRMED_STATUSES=new Set(['pass','audit','audit_check','stock_adjustment']);
 const OMIT_FIELDS=new Set(['retries','scans','manualEditAt','sku','countResetAt','rev','updatedBy','updatedAt']);
@@ -56,6 +58,15 @@ function countsByStatus(entries,getItem){
     out[status]=(out[status]||0)+1;
   }
   return out;
+}
+function sameStatusCounts(actual,expected){
+  const actualKeys=Object.keys(actual).sort();
+  const expectedKeys=Object.keys(expected).sort();
+  return actualKeys.length===expectedKeys.length&&
+    actualKeys.every((key,index)=>key===expectedKeys[index]&&actual[key]===expected[key]);
+}
+function mapContentJson(map){
+  return JSON.stringify([...map.entries()].sort(([a],[b])=>String(a).localeCompare(String(b))));
 }
 function sameExpectedSummary(actual){
   if(actual.total!==SPEC.scanDataSize||actual.completed!==SPEC.completed)return false;
@@ -180,6 +191,186 @@ async function backupCloudBeforeWrite(validated,cloud){
   globalThis.__SRC_RECOVERY_CLOUD_BACKUP__={fileName,dataSha256,archive};
   console.info(`[SRC recovery] สำรอง Cloud ก่อนเขียนแล้ว: ${fileName} (SHA-256 ${dataSha256})`);
   return{fileName,dataSha256,itemCount:cloud.all.size};
+}
+async function readSchemaRepairSnapshot(){
+  assertAppReady();
+  const sessionRef=_db.collection('stock_sessions').doc(SPEC.branch);
+  const sessionDoc=await sessionRef.get({source:'server'});
+  if(!sessionDoc.exists)fail('ไม่พบ session SRC บน Cloud');
+  const raw=sessionDoc.data()||{};
+  const schemaValue=raw.schemaVersion===undefined||raw.schemaVersion===null?null:Number(raw.schemaVersion);
+  if(schemaValue!==null&&schemaValue!==1&&schemaValue!==SPEC.schemaVersion){
+    fail(`schemaVersion บน Cloud เป็นค่าที่ไม่รองรับ (${raw.schemaVersion})`);
+  }
+  if(typeof raw.session_data_json!=='string')fail('session_data_json บน Cloud ไม่ใช่ข้อความเดิม — หยุด');
+  const session=parseSessionSnapshot(sessionDoc);
+  if(!session)fail('session SRC บน Cloud ว่าง');
+  if((session.countResetAt||'')!==SPEC.epoch)fail(`Cloud อยู่คนละรอบนับ (${session.countResetAt||'ว่าง'}) — ห้ามซ่อม`);
+  const staleBlobScanDataSize=Object.keys(session.scanData||{}).length;
+  if(staleBlobScanDataSize!==SPEC.staleBlobScanDataSize){
+    fail(`scanData ใน blob เปลี่ยนจากหลักฐานเดิม (${staleBlobScanDataSize} แทน ${SPEC.staleBlobScanDataSize}) — หยุด`);
+  }
+
+  const itemsRef=sessionRef.collection('items');
+  let itemsSnapshot;
+  try{itemsSnapshot=await itemsRef.get({source:'server'});}
+  catch(e){fail(`อ่าน items จาก Cloud ไม่สำเร็จ (${e.code||e.message})`);}
+  const all=new Map();
+  const current=new Map();
+  itemsSnapshot.forEach(doc=>{
+    const item=doc.data()||{};
+    all.set(doc.id,item);
+    if(String(item.countResetAt||'')===SPEC.epoch)current.set(doc.id,item);
+  });
+  const currentStatuses=countsByStatus([...current.values()]);
+  if(current.size!==SPEC.completed||!sameStatusCounts(currentStatuses,SPEC.cloudItemStatuses)){
+    fail(`items รอบปัจจุบันไม่ตรงหลักฐาน 1,937 รายการ (${current.size}; ${JSON.stringify(currentStatuses)}) — หยุด`);
+  }
+  const sessionJson=raw.session_data_json;
+  const sessionHash=await sha256Hex(new TextEncoder().encode(sessionJson));
+  const itemsJson=mapContentJson(all);
+  const itemsHash=await sha256Hex(new TextEncoder().encode(itemsJson));
+  return{
+    sessionRef,
+    schemaValue,
+    raw,
+    session,
+    sessionJson,
+    sessionHash,
+    sessionBytes:new TextEncoder().encode(sessionJson).length,
+    staleBlobScanDataSize,
+    all,
+    current,
+    currentStatuses,
+    itemsHash
+  };
+}
+function printSchemaRepairDryRun(snapshot){
+  const report={
+    cloudSchemaVersion:snapshot.schemaValue===null?'(missing)':snapshot.schemaValue,
+    countResetAt:SPEC.epoch,
+    sessionBytes:snapshot.sessionBytes,
+    staleBlobScanData:snapshot.staleBlobScanDataSize,
+    currentEpochItems:snapshot.current.size,
+    currentStatuses:snapshot.currentStatuses,
+    allItemDocuments:snapshot.all.size,
+    sessionSha256:snapshot.sessionHash,
+    itemsSha256:snapshot.itemsHash,
+    plannedWrite:snapshot.schemaValue===SPEC.schemaVersion?'none':'merge schemaVersion: 2 only'
+  };
+  console.group('[SRC schema repair] DRY RUN — ยังไม่ได้เขียนข้อมูล');
+  console.table(report);
+  console.table(snapshot.currentStatuses);
+  console.groupEnd();
+  return report;
+}
+async function backupSchemaRepairSnapshot(snapshot){
+  const items={};
+  for(const[sku,item]of snapshot.all)items[sku]=item;
+  const data={
+    capturedAt:new Date().toISOString(),
+    purpose:'before-schema-version-repair',
+    branch:SPEC.branch,
+    expectedCountResetAt:SPEC.epoch,
+    sessionSha256:snapshot.sessionHash,
+    itemsSha256:snapshot.itemsHash,
+    sessionDocument:snapshot.raw,
+    items
+  };
+  const dataJson=JSON.stringify(data);
+  const dataSha256=await sha256Hex(new TextEncoder().encode(dataJson));
+  const archive={backupType:'SRC_CLOUD_BEFORE_SCHEMA_REPAIR',backupVersion:1,dataSha256,data};
+  const stamp=data.capturedAt.replace(/[:.]/g,'-');
+  const fileName=`SRC-cloud-before-schema-repair-${stamp}.json`;
+  downloadJsonFile(fileName,JSON.stringify(archive));
+  globalThis.__SRC_SCHEMA_REPAIR_CLOUD_BACKUP__={fileName,dataSha256,archive};
+  console.info(`[SRC schema repair] สำรอง Cloud แล้ว: ${fileName} (SHA-256 ${dataSha256})`);
+  return{fileName,dataSha256,itemCount:snapshot.all.size};
+}
+async function repairSrcSchemaVersion(options={}){
+  const before=await readSchemaRepairSnapshot();
+  const dryRun=printSchemaRepairDryRun(before);
+  globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__={stage:'dry-run',...dryRun};
+  if(before.schemaValue===SPEC.schemaVersion){
+    const report={stage:'already-repaired',...dryRun};
+    globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__=report;
+    console.info('[SRC schema repair] Cloud เป็น schema v2 อยู่แล้ว — ไม่ได้เขียนอะไร');
+    return report;
+  }
+  if(options.dryRun){
+    globalThis.__SRC_SCHEMA_REPAIR_DRY_RUN__={
+      sessionHash:before.sessionHash,
+      itemsHash:before.itemsHash,
+      epoch:SPEC.epoch,
+      at:Date.now()
+    };
+    console.info('[SRC schema repair] dryRun=true — ไม่ได้เขียนข้อมูล');
+    return globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__;
+  }
+  const prior=globalThis.__SRC_SCHEMA_REPAIR_DRY_RUN__;
+  if(!prior||prior.sessionHash!==before.sessionHash||prior.itemsHash!==before.itemsHash||
+    prior.epoch!==SPEC.epoch||Date.now()-prior.at>30*60*1000){
+    fail('ต้องรัน await repairSrcSchemaVersion({dryRun:true}) ให้ผ่านใน Console เดียวกันก่อน — ยังไม่ได้เขียนข้อมูล');
+  }
+  const cloudBackup=await backupSchemaRepairSnapshot(before);
+  const phrase='REPAIR SRC SCHEMA 2';
+  const answer=prompt(
+    `สำรอง Cloud เป็น ${cloudBackup.fileName} แล้ว\n`+
+    `items รอบปัจจุบันครบ ${before.current.size} รายการ\n`+
+    `transaction จะ merge เฉพาะ schemaVersion: 2\n`+
+    `ไม่เขียนหรือลบ session_data_json และ items\n\n`+
+    `พิมพ์ ${phrase} เพื่อดำเนินการ:`
+  );
+  if(answer!==phrase){
+    console.warn('[SRC schema repair] ยกเลิก — ไม่ได้เขียนข้อมูล');
+    return globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__;
+  }
+
+  const transactionResult=await _db.runTransaction(async tx=>{
+    const freshDoc=await tx.get(before.sessionRef);
+    if(!freshDoc.exists)fail('session SRC หายระหว่างซ่อม');
+    const freshRaw=freshDoc.data()||{};
+    const freshSchema=freshRaw.schemaVersion===undefined||freshRaw.schemaVersion===null?null:Number(freshRaw.schemaVersion);
+    if(freshSchema===SPEC.schemaVersion)return{changed:false,already:true};
+    if(freshSchema!==null&&freshSchema!==1)fail(`schemaVersion เปลี่ยนกลางงาน (${freshRaw.schemaVersion})`);
+    if(freshRaw.session_data_json!==before.sessionJson)fail('session_data_json เปลี่ยนกลางงาน — หยุดโดยไม่เขียน');
+    let freshSession;
+    try{freshSession=JSON.parse(freshRaw.session_data_json);}
+    catch(e){fail(`session_data_json อ่านไม่ออกกลางงาน (${e.message})`);}
+    if((freshSession.countResetAt||'')!==SPEC.epoch||
+      Object.keys(freshSession.scanData||{}).length!==SPEC.staleBlobScanDataSize){
+      fail('epoch หรือจำนวน blob เปลี่ยนกลางงาน — หยุดโดยไม่เขียน');
+    }
+    // จุดเขียนเพียงจุดเดียวของ schema repair: merge field เดียว ไม่แตะ blob/items
+    tx.set(before.sessionRef,{schemaVersion:SPEC.schemaVersion},{merge:true});
+    return{changed:true,already:false};
+  });
+
+  const after=await readSchemaRepairSnapshot();
+  if(after.schemaValue!==SPEC.schemaVersion)fail('ตรวจหลังเขียนแล้ว schemaVersion ยังไม่เป็น 2');
+  if(after.sessionHash!==before.sessionHash||after.sessionJson!==before.sessionJson){
+    fail('ตรวจหลังเขียนพบว่า session_data_json เปลี่ยน — กรุณาใช้ไฟล์ Cloud backup และหยุดใช้งาน');
+  }
+  if(after.itemsHash!==before.itemsHash){
+    fail('ตรวจหลังเขียนพบว่า items เปลี่ยนระหว่างงาน — schema repair ไม่ได้เขียน items กรุณาหยุดและตรวจ concurrent client');
+  }
+  const verified={
+    schemaVersion:after.schemaValue,
+    sessionUnchanged:true,
+    itemsUnchanged:true,
+    currentEpochItems:after.current.size,
+    currentStatuses:after.currentStatuses,
+    sessionSha256:after.sessionHash,
+    itemsSha256:after.itemsHash
+  };
+  const report={stage:'verified',...dryRun,cloudBackup,transactionResult,verified};
+  globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__=report;
+  console.group('[SRC schema repair] ✅ ซ่อมและตรวจผลสำเร็จ');
+  console.table(report);
+  console.table(verified.currentStatuses);
+  console.groupEnd();
+  console.info('รีโหลดหน้า SRC ทุกเครื่องหลังยืนยันว่า deploy รุ่นล่าสุดแล้ว');
+  return report;
 }
 async function readCloudPreflight(backup){
   const sessionRef=_db.collection('stock_sessions').doc(SPEC.branch);
@@ -377,5 +568,7 @@ async function recoverSrcMissingItems(options={}){
 
 globalThis.validateSrcLocalBackup=async file=>validateBackupFile(file||await chooseBackupFile());
 globalThis.recoverSrcMissingItems=recoverSrcMissingItems;
+globalThis.repairSrcSchemaVersion=repairSrcSchemaVersion;
 console.info('[SRC recovery] Helper พร้อมแล้ว — เริ่มด้วย await recoverSrcMissingItems({dryRun:true})');
+console.info('[SRC schema repair] เริ่มตรวจด้วย await repairSrcSchemaVersion({dryRun:true})');
 })();
