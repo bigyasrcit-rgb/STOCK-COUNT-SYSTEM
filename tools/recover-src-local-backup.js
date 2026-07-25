@@ -65,8 +65,41 @@ function sameStatusCounts(actual,expected){
   return actualKeys.length===expectedKeys.length&&
     actualKeys.every((key,index)=>key===expectedKeys[index]&&actual[key]===expected[key]);
 }
+function canonicalValue(value){
+  if(value===null||typeof value!=='object'){
+    if(typeof value==='number'&&!Number.isFinite(value))return{$type:'number',value:String(value)};
+    if(typeof value==='bigint')return{$type:'bigint',value:String(value)};
+    return value===undefined?{$type:'undefined'}:value;
+  }
+  if(typeof value.toMillis==='function'&&typeof value.toDate==='function'){
+    const millis=Number(value.toMillis());
+    return{
+      $type:'firestore.Timestamp',
+      seconds:Number(value.seconds??value._seconds??Math.floor(millis/1000)),
+      nanoseconds:Number(value.nanoseconds??value._nanoseconds??((millis%1000)*1000000))
+    };
+  }
+  if(value instanceof Date)return{$type:'Date',value:value.toISOString()};
+  if(Array.isArray(value))return value.map(canonicalValue);
+  if(value instanceof Map){
+    return{$type:'Map',value:[...value.entries()]
+      .sort(([a],[b])=>String(a).localeCompare(String(b)))
+      .map(([key,item])=>[canonicalValue(key),canonicalValue(item)])};
+  }
+  if(value instanceof Set){
+    return{$type:'Set',value:[...value.values()].map(canonicalValue)
+      .sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))};
+  }
+  if(typeof value.path==='string'&&typeof value.id==='string'){
+    return{$type:'firestore.DocumentReference',path:value.path};
+  }
+  const out={};
+  for(const key of Object.keys(value).sort())out[key]=canonicalValue(value[key]);
+  return out;
+}
 function mapContentJson(map){
-  return JSON.stringify([...map.entries()].sort(([a],[b])=>String(a).localeCompare(String(b))));
+  const entries=[...map.entries()].sort(([a],[b])=>String(a).localeCompare(String(b)));
+  return JSON.stringify(canonicalValue(entries));
 }
 function sameExpectedSummary(actual){
   if(actual.total!==SPEC.scanDataSize||actual.completed!==SPEC.completed)return false;
