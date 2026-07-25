@@ -239,6 +239,8 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 `{branch}_v1_backup` = สำเนา blob ก่อน migrate (SRC/WH) เก็บไว้จน confirm ว่า v2 เสถียร
 
 **ทุก reader ที่อ่าน `scanData` จาก session blob ต้องมี v2 branch ที่อ่านจาก items แทน** — จุดที่มีแล้ว: `syncToFirestore`, `_applyCloudScanData`/listener, `restoreFromFirestore`, `pullFromCloud`, `_removeSkuFromFirestore`, `_readBranchConfirmCloudState`, **`buildDashboardData`** (Dashboard ข้ามสาขา — เคยลืม ทำให้ SRC/WH ขึ้น 0 ขณะ SSS v1 ปกติ, แก้ ก.ค. 2026 ให้ดึง items เมื่อ `schemaVersion===2`) · ถ้าเพิ่ม reader ใหม่ที่ parse `session_data_json.scanData` ต้องเติม v2 path ด้วยเสมอ
+- Dashboard ของ schema v2 ต้อง query `items` ด้วย `countResetAt` ของ session ปัจจุบันและอ่านจาก server โดยตรง ห้ามอ่านทั้ง subcollection แบบไม่กรอง epoch; ถ้าอ่าน session/items ล้มเหลวต้องแสดง error ไม่ย้อนใช้ metadata-only blob แล้วแสดงยอด 0/ยอดบางส่วน
+- การกู้รายการที่ขาดจาก local backup ให้ใช้ `tools/recover-src-local-backup.js`: ตรวจ SHA-256 + branch + `countResetAt`, บังคับ dry-run, ดาวน์โหลดสำรอง session/items จาก Cloud ก่อนเขียน และใช้ transaction เขียนเฉพาะ SKU ที่ไม่มี document อยู่ในทุก epoch เท่านั้น ห้าม overwrite item เดิมทุกกรณี
 
 ### Pharmacy Desktop Confirm
 

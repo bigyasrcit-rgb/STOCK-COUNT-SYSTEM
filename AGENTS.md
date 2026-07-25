@@ -193,6 +193,8 @@ Schema v2 — invariant ที่ห้ามทำให้ย้อนกล�
 - `_checkSessionBlobSize()` **ห้ามกลับไป block การเขียน** — block เองจะทำให้ payload ที่ Firestore ยังรับได้เขียนไม่ผ่าน และทำ branch lock ค้าง
 - `migrateSessionToSchemaV2()` ต้องคงลำดับ: สำรอง → เขียน items → **verify จำนวนจาก server** → ค่อยเขียน session doc เป็น metadata-only
   ห้ามเขียน session doc ก่อน verify เด็ดขาด เพราะนั่นคือจุดที่ `scanData` เดิมหายไป
+- Dashboard v2 ต้องอ่าน `items` จาก server โดยกรอง `countResetAt` ของ session ปัจจุบัน; ถ้าอ่านล้มเหลวต้องแสดง error ห้าม fallback ไป metadata-only blob แล้วแสดงยอดต่ำกว่าจริง
+- การกู้ local backup ระหว่างรอบนับต้องตรวจ hash/branch/`countResetAt`, บังคับ dry-run, สำรอง Cloud ก่อนเขียน และเขียนเฉพาะ SKU ที่ไม่มี document อยู่ในทุก epoch ด้วย transaction ห้ามทับ item เดิมทุกกรณี
 
 Toast บน PDA ต้องกระชับผ่าน `_toastMessageForDevice()` และใช้ `textContent`/callback สำหรับ action ห้ามกลับไปประกอบข้อความผู้ใช้ด้วย unsafe `innerHTML`
 

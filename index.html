@@ -6599,6 +6599,29 @@ function openDashboardPopup(){
 function closeDashboardPopup(){_closeModal('dashboardPopupOverlay','dashboardPopupCard',null);}
 function handleDashboardOverlayClick(e){if(e.target===document.getElementById('dashboardPopupOverlay'))closeDashboardPopup();}
 
+function _dashboardReadError(branch,source,e){
+  const detail=e?.code||e?.message||'unknown';
+  const err=new Error(`อ่าน ${source} ของ ${branch} ไม่สำเร็จ (${detail})`);
+  err.cause=e;
+  return err;
+}
+async function _loadDashboardItemsForBranch(branch,sessionDoc){
+  if(!sessionDoc||!sessionDoc.exists)return null;
+  const raw=sessionDoc.data()||{};
+  if(Number(raw.schemaVersion)!==SCAN_SCHEMA_V2)return null;
+  const session=_parseSessionSnapshot(sessionDoc);
+  if(!session)throw new Error(`อ่าน session ของ ${branch} ไม่สำเร็จ (ข้อมูลว่างหรือรูปแบบไม่ถูกต้อง)`);
+  const epoch=session.countResetAt||'';
+  try{
+    // Dashboard ต้องอ่านเฉพาะรอบนับปัจจุบัน ห้ามรวม item เก่าคนละ countResetAt
+    // และใช้ server โดยตรง เพื่อไม่แสดงยอด cache เก่าเป็นยอดล่าสุด
+    const snap=await getScanItemsRef(branch).where('countResetAt','==',epoch).get({source:'server'});
+    const items={};
+    snap.forEach(doc=>{items[doc.id]=doc.data();});
+    return items;
+  }catch(e){throw _dashboardReadError(branch,'items รอบปัจจุบัน',e);}
+}
+
 async function refreshDashboard(){
   if(_dashLoading)return;
   if(!_db){document.getElementById('dashboardBody').innerHTML='<div style="text-align:center;padding:60px;color:var(--red);">Firestore ไม่พร้อมใช้งาน</div>';return;}
@@ -6608,23 +6631,34 @@ async function refreshDashboard(){
   document.getElementById('dashboardBody').innerHTML='<div style="text-align:center;padding:60px;color:var(--text3);">กำลังโหลด...</div>';
   try{
     const activeBranches=getActiveDashBranches();
-    const sessionPromises=activeBranches.map(b=>_db.collection('stock_sessions').doc(b).get().then(d=>({b,d})).catch(()=>({b,d:null})));
-    const auditPromises=activeBranches.map(b=>_db.collection('stock_audit_log').where('branch','==',b).get().then(s=>({b,s})).catch(()=>({b,s:null})));
-    const r01Promises=activeBranches.map(b=>_db.collection('stock_sessions').doc(b+'_r01').get().then(d=>({b,d})).catch(()=>({b,d:null})));
+    const sessionPromises=activeBranches.map(async b=>{
+      try{return{b,d:await _db.collection('stock_sessions').doc(b).get({source:'server'})};}
+      catch(e){throw _dashboardReadError(b,'session',e);}
+    });
+    const auditPromises=activeBranches.map(async b=>{
+      try{return{b,s:await _db.collection('stock_audit_log').where('branch','==',b).get({source:'server'})};}
+      catch(e){throw _dashboardReadError(b,'Audit Log',e);}
+    });
+    const r01Promises=activeBranches.map(async b=>{
+      try{return{b,d:await _db.collection('stock_sessions').doc(b+'_r01').get({source:'server'})};}
+      catch(e){throw _dashboardReadError(b,'R01',e);}
+    });
     const [sessionResults,auditResults,r01Results]=await Promise.all([Promise.all(sessionPromises),Promise.all(auditPromises),Promise.all(r01Promises)]);
     // schema v2: scanData ย้ายไป items subcollection แล้ว — session blob ไม่มี scanData ต้องดึง items มาแทน
     const itemsResults=await Promise.all(sessionResults.map(async({b,d})=>{
-      if(!d||!d.exists||Number(d.data().schemaVersion)!==SCAN_SCHEMA_V2)return{b,items:null};
-      try{const snap=await getScanItemsRef(b).get();const items={};snap.forEach(doc=>{items[doc.id]=doc.data();});return{b,items};}
-      catch(e){return{b,items:null};}
+      return{b,items:await _loadDashboardItemsForBranch(b,d)};
     }));
-    const itemsByBranch={};for(const{b,items}of itemsResults)if(items)itemsByBranch[b]=items;
+    const itemsByBranch={};for(const{b,items}of itemsResults)if(items!==null)itemsByBranch[b]=items;
     const data=buildDashboardData(sessionResults,auditResults,r01Results,itemsByBranch);
     renderDashboard(data);
     document.getElementById('dashStatus').textContent=`อัปเดต: ${formatThaiDateTime(new Date())}`;
   }catch(e){
     console.warn('[Dashboard]',e);
-    document.getElementById('dashboardBody').innerHTML=`<div style="text-align:center;padding:60px;color:var(--red);">โหลดข้อมูลไม่สำเร็จ: ${e.message}</div>`;
+    document.getElementById('dashStatus').textContent='โหลดไม่สำเร็จ';
+    const errorBox=document.createElement('div');
+    errorBox.style.cssText='text-align:center;padding:60px;color:var(--red);';
+    errorBox.textContent=`โหลดข้อมูลไม่สำเร็จ: ${e?.message||'ไม่ทราบสาเหตุ'}`;
+    document.getElementById('dashboardBody').replaceChildren(errorBox);
   }finally{
     _dashLoading=false;
     document.getElementById('dashRefreshBtn').disabled=false;
@@ -6642,8 +6676,9 @@ function buildDashboardData(sessionResults,auditResults,r01Results,itemsByBranch
   // v2 → itemsByBranch[b] (จาก items subcollection); v1 → s.scanData ใน blob เดิม
   for(const{b,d} of sessionResults){
     if(!branches[b])continue;
-    let scanData=itemsByBranch&&itemsByBranch[b];
-    if(!scanData){
+    const hasV2Items=!!itemsByBranch&&Object.prototype.hasOwnProperty.call(itemsByBranch,b);
+    let scanData=hasV2Items?itemsByBranch[b]:null;
+    if(!hasV2Items){
       if(!d||!d.exists)continue;
       const raw=d.data();
       const s=raw.session_data_json?JSON.parse(raw.session_data_json):raw.session_data;
