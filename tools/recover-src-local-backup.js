@@ -13,6 +13,7 @@
  * - validates the whole-file SHA-256, embedded session SHA-256, branch and epoch;
  * - dry-runs against Firestore server data before asking for confirmation;
  * - downloads a second backup of the Cloud session/items before any write;
+ * - pauses this page's v1 timers/listeners and drains pending writes before schema repair;
  * - transactionally writes only SKUs whose document ID does not exist in any epoch;
  * - never replaces an existing document, even if it appears after the dry-run;
  * - rechecks the session epoch in every transaction and verifies all recovered SKUs.
@@ -37,6 +38,8 @@ const CONFIRMED_STATUSES=new Set(['pass','audit','audit_check','stock_adjustment
 const OMIT_FIELDS=new Set(['retries','scans','manualEditAt','sku','countResetAt','rev','updatedBy','updatedAt']);
 const TX_CHUNK_SIZE=100;
 const TX_PAUSE_MS=250;
+const SCHEMA_REPAIR_QUIET_MS=4000;
+const SCHEMA_REPAIR_PENDING_TIMEOUT_MS=20000;
 
 function fail(message){throw new Error(`[SRC recovery] ${message}`);}
 function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
@@ -154,12 +157,12 @@ async function validateBackupFile(file){
   }
   return{backup,fileHash,sessionHash,summary};
 }
-function assertAppReady(){
+function assertAppReady(options={}){
   if(typeof _db==='undefined'||!_db)fail('Firestore ยังไม่พร้อม กรุณา login เข้าโปรแกรมก่อน');
   if(typeof firebase==='undefined'||!firebase.firestore)fail('ไม่พบ Firebase runtime ของโปรแกรม');
   if(typeof currentBranch==='undefined'||currentBranch!==SPEC.branch)fail(`ต้องเปิดสาขา ${SPEC.branch} เท่านั้น (ขณะนี้ ${typeof currentBranch==='undefined'?'ไม่ทราบ':currentBranch})`);
   if(typeof _isPdaApp==='function'&&_isPdaApp())fail('ต้องรันบน Desktop เท่านั้น ห้ามรันบน PDA');
-  if(typeof _adminMode!=='undefined'&&_adminMode)fail('กรุณาออกจาก Admin Mode ก่อน');
+  if(typeof _adminMode!=='undefined'&&_adminMode&&!options.allowSchemaRepairPause)fail('กรุณาออกจาก Admin Mode ก่อน');
   if(typeof _branchConfirming!=='undefined'&&_branchConfirming)fail('มีการ Confirm อยู่ กรุณารอให้จบก่อน');
   if(!navigator.onLine)fail('เครื่องออฟไลน์');
   // Fresh/Incognito page อาจยังถือค่าเริ่มต้น v1 ก่อน restore async อ่าน session จบ
@@ -225,8 +228,8 @@ async function backupCloudBeforeWrite(validated,cloud){
   console.info(`[SRC recovery] สำรอง Cloud ก่อนเขียนแล้ว: ${fileName} (SHA-256 ${dataSha256})`);
   return{fileName,dataSha256,itemCount:cloud.all.size};
 }
-async function readSchemaRepairSnapshot(){
-  assertAppReady();
+async function readSchemaRepairSnapshot(options={}){
+  assertAppReady(options);
   const sessionRef=_db.collection('stock_sessions').doc(SPEC.branch);
   const sessionDoc=await sessionRef.get({source:'server'});
   if(!sessionDoc.exists)fail('ไม่พบ session SRC บน Cloud');
@@ -278,6 +281,69 @@ async function readSchemaRepairSnapshot(){
     itemsHash
   };
 }
+function pauseSchemaRepairRuntime(){
+  if(globalThis.__SRC_SCHEMA_REPAIR_RUNTIME__?.active){
+    fail('หน้าเว็บอยู่ในโหมดพักการเขียนจาก schema repair ก่อนหน้าแล้ว — ให้รีโหลดหน้าแทนการรันซ้ำ');
+  }
+  const runtime={
+    active:true,
+    startedAt:new Date().toISOString(),
+    previousAdminMode:typeof _adminMode!=='undefined'?!!_adminMode:false,
+    previousSchemaVersion:typeof _schemaVersion!=='undefined'?Number(_schemaVersion)||1:null,
+    sessionListenerWasActive:typeof _scanSessionUnsubscribe!=='undefined'&&!!_scanSessionUnsubscribe,
+    itemsListenerWasActive:typeof _scanItemsUnsubscribe!=='undefined'&&!!_scanItemsUnsubscribe,
+    reconcileWasActive:typeof _scanItemReconcileTimer!=='undefined'&&!!_scanItemReconcileTimer
+  };
+  if(runtime.previousAdminMode)fail('กรุณาออกจาก Admin Mode ก่อน');
+
+  // บล็อก syncToFirestore()/dirty flush ใหม่ก่อน แล้วค่อยยกเลิกงานที่ตั้งเวลาไว้
+  // หน้า v1 เดิมใช้ ref.set() แบบ replace ซึ่งลบ schemaVersion ที่เพิ่ง merge ได้
+  if(typeof _adminMode!=='undefined')_adminMode=true;
+  if(typeof _schemaVersion!=='undefined')_schemaVersion=SPEC.schemaVersion;
+  if(typeof _firestoreSyncTimer!=='undefined'){clearTimeout(_firestoreSyncTimer);_firestoreSyncTimer=null;}
+  if(typeof _saveTimer!=='undefined'){clearTimeout(_saveTimer);_saveTimer=null;}
+  if(typeof _scanItemFlushTimer!=='undefined'){clearTimeout(_scanItemFlushTimer);_scanItemFlushTimer=null;}
+  if(typeof _snapshotMergeTimer!=='undefined'){clearTimeout(_snapshotMergeTimer);_snapshotMergeTimer=null;}
+  if(typeof _scanItemReconcileTimer!=='undefined'){clearInterval(_scanItemReconcileTimer);_scanItemReconcileTimer=null;}
+  if(typeof stopScanSessionListener==='function')stopScanSessionListener();
+  else{
+    if(typeof _scanSessionUnsubscribe!=='undefined'&&_scanSessionUnsubscribe){_scanSessionUnsubscribe();_scanSessionUnsubscribe=null;}
+    if(typeof stopScanItemsListener==='function')stopScanItemsListener();
+  }
+
+  globalThis.__SRC_SCHEMA_REPAIR_RUNTIME__=runtime;
+  console.warn('[SRC schema repair] พัก background sync/listener ของหน้านี้แล้ว — ห้ามสแกนหรือใช้งานหน้านี้จนกว่าจะรีโหลด');
+  return runtime;
+}
+async function waitForPendingFirestoreWrites(stage){
+  if(typeof _db.waitForPendingWrites!=='function')return;
+  let timeoutId=null;
+  try{
+    await Promise.race([
+      _db.waitForPendingWrites(),
+      new Promise((resolve,reject)=>{
+        timeoutId=setTimeout(()=>reject(new Error(`รอ pending Firestore writes เกินเวลา (${stage})`)),SCHEMA_REPAIR_PENDING_TIMEOUT_MS);
+      })
+    ]);
+  }catch(e){fail(`รอ background write ของหน้าเดิมไม่สำเร็จ (${e.code||e.message})`);}
+  finally{if(timeoutId!==null)clearTimeout(timeoutId);}
+}
+async function waitForSchemaRepairRuntimeQuiet(){
+  // ให้ sync v1 ที่เริ่มทำงานก่อนตั้ง _adminMode มีเวลาจบ read-modify-write ก่อน
+  await sleep(SCHEMA_REPAIR_QUIET_MS);
+  await waitForPendingFirestoreWrites('รอบแรก');
+  // ปิดช่อง race ที่ async v1 read เพิ่งจบแล้ว enqueue write หลัง waitForPendingWrites() ครั้งแรก
+  await sleep(SCHEMA_REPAIR_QUIET_MS);
+  await waitForPendingFirestoreWrites('รอบสุดท้าย');
+}
+function assertSchemaRepairContentUnchanged(actual,expected,stage){
+  if(actual.sessionHash!==expected.sessionHash||actual.sessionJson!==expected.sessionJson){
+    fail(`${stage}: session_data_json เปลี่ยนระหว่างพักหน้า — หยุดโดยไม่เขียน schemaVersion`);
+  }
+  if(actual.itemsHash!==expected.itemsHash){
+    fail(`${stage}: items เปลี่ยนระหว่างพักหน้า — หยุดโดยไม่เขียน schemaVersion`);
+  }
+}
 function printSchemaRepairDryRun(snapshot){
   const report={
     cloudSchemaVersion:snapshot.schemaValue===null?'(missing)':snapshot.schemaValue,
@@ -325,9 +391,35 @@ async function repairSrcSchemaVersion(options={}){
   const dryRun=printSchemaRepairDryRun(before);
   globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__={stage:'dry-run',...dryRun};
   if(before.schemaValue===SPEC.schemaVersion){
+    // ถ้า Cloud เป็น v2 แต่หน้าเดิมยังถือ v1 ห้าม return เฉยๆ:
+    // timer v1 ที่ยังค้างสามารถ replace session doc แล้วลบ schemaVersion ได้ภายหลัง
+    if(typeof _schemaVersion==='undefined'||Number(_schemaVersion)!==SPEC.schemaVersion){
+      const runtime=pauseSchemaRepairRuntime();
+      try{
+        await waitForSchemaRepairRuntimeQuiet();
+        const stable=await readSchemaRepairSnapshot({allowSchemaRepairPause:true});
+        assertSchemaRepairContentUnchanged(stable,before,'ตรวจ schema v2 ที่มีอยู่');
+        if(stable.schemaValue!==SPEC.schemaVersion){
+          fail('background write ของหน้า v1 ลบ schemaVersion ระหว่างตรวจ — ให้รีโหลดแล้วเริ่ม dry-run ใหม่');
+        }
+        runtime.active=false;
+        runtime.finishedAt=new Date().toISOString();
+        runtime.result='already-repaired-reload-required';
+        const report={stage:'already-repaired',...dryRun,runtimePausedUntilReload:true};
+        globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__=report;
+        console.info('[SRC schema repair] Cloud เป็น schema v2 อยู่แล้วและข้อมูลไม่เปลี่ยน — หน้านี้ถูกพักไว้ ให้รีโหลดทันที');
+        return report;
+      }catch(e){
+        runtime.result='paused-after-error';
+        runtime.error=e.message;
+        globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__={stage:'paused-after-error',...dryRun,runtimePausedUntilReload:true,error:e.message};
+        console.error('[SRC schema repair] หยุดอย่างปลอดภัย — หน้านี้ยังพัก background sync อยู่ ให้รีโหลดก่อน');
+        throw e;
+      }
+    }
     const report={stage:'already-repaired',...dryRun};
     globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__=report;
-    console.info('[SRC schema repair] Cloud เป็น schema v2 อยู่แล้ว — ไม่ได้เขียนอะไร');
+    console.info('[SRC schema repair] Cloud และหน้า local เป็น schema v2 อยู่แล้ว — ไม่ได้เขียนอะไร');
     return report;
   }
   if(options.dryRun){
@@ -359,51 +451,72 @@ async function repairSrcSchemaVersion(options={}){
     return globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__;
   }
 
-  const transactionResult=await _db.runTransaction(async tx=>{
-    const freshDoc=await tx.get(before.sessionRef);
-    if(!freshDoc.exists)fail('session SRC หายระหว่างซ่อม');
-    const freshRaw=freshDoc.data()||{};
-    const freshSchema=freshRaw.schemaVersion===undefined||freshRaw.schemaVersion===null?null:Number(freshRaw.schemaVersion);
-    if(freshSchema===SPEC.schemaVersion)return{changed:false,already:true};
-    if(freshSchema!==null&&freshSchema!==1)fail(`schemaVersion เปลี่ยนกลางงาน (${freshRaw.schemaVersion})`);
-    if(freshRaw.session_data_json!==before.sessionJson)fail('session_data_json เปลี่ยนกลางงาน — หยุดโดยไม่เขียน');
-    let freshSession;
-    try{freshSession=JSON.parse(freshRaw.session_data_json);}
-    catch(e){fail(`session_data_json อ่านไม่ออกกลางงาน (${e.message})`);}
-    if((freshSession.countResetAt||'')!==SPEC.epoch||
-      Object.keys(freshSession.scanData||{}).length!==SPEC.staleBlobScanDataSize){
-      fail('epoch หรือจำนวน blob เปลี่ยนกลางงาน — หยุดโดยไม่เขียน');
-    }
-    // จุดเขียนเพียงจุดเดียวของ schema repair: merge field เดียว ไม่แตะ blob/items
-    tx.set(before.sessionRef,{schemaVersion:SPEC.schemaVersion},{merge:true});
-    return{changed:true,already:false};
-  });
+  delete globalThis.__SRC_SCHEMA_REPAIR_DRY_RUN__;
+  const runtime=pauseSchemaRepairRuntime();
+  try{
+    await waitForSchemaRepairRuntimeQuiet();
+    const stableBefore=await readSchemaRepairSnapshot({allowSchemaRepairPause:true});
+    assertSchemaRepairContentUnchanged(stableBefore,before,'ก่อนเขียน');
 
-  const after=await readSchemaRepairSnapshot();
-  if(after.schemaValue!==SPEC.schemaVersion)fail('ตรวจหลังเขียนแล้ว schemaVersion ยังไม่เป็น 2');
-  if(after.sessionHash!==before.sessionHash||after.sessionJson!==before.sessionJson){
-    fail('ตรวจหลังเขียนพบว่า session_data_json เปลี่ยน — กรุณาใช้ไฟล์ Cloud backup และหยุดใช้งาน');
+    const transactionResult=await _db.runTransaction(async tx=>{
+      const freshDoc=await tx.get(stableBefore.sessionRef);
+      if(!freshDoc.exists)fail('session SRC หายระหว่างซ่อม');
+      const freshRaw=freshDoc.data()||{};
+      const freshSchema=freshRaw.schemaVersion===undefined||freshRaw.schemaVersion===null?null:Number(freshRaw.schemaVersion);
+      if(freshSchema===SPEC.schemaVersion)return{changed:false,already:true};
+      if(freshSchema!==null&&freshSchema!==1)fail(`schemaVersion เปลี่ยนกลางงาน (${freshRaw.schemaVersion})`);
+      if(freshRaw.session_data_json!==stableBefore.sessionJson)fail('session_data_json เปลี่ยนกลางงาน — หยุดโดยไม่เขียน');
+      let freshSession;
+      try{freshSession=JSON.parse(freshRaw.session_data_json);}
+      catch(e){fail(`session_data_json อ่านไม่ออกกลางงาน (${e.message})`);}
+      if((freshSession.countResetAt||'')!==SPEC.epoch||
+        Object.keys(freshSession.scanData||{}).length!==SPEC.staleBlobScanDataSize){
+        fail('epoch หรือจำนวน blob เปลี่ยนกลางงาน — หยุดโดยไม่เขียน');
+      }
+      // จุดเขียนเพียงจุดเดียวของ schema repair: merge field เดียว ไม่แตะ blob/items
+      tx.set(stableBefore.sessionRef,{schemaVersion:SPEC.schemaVersion},{merge:true});
+      return{changed:true,already:false};
+    });
+
+    // ถ้ายังมี v1 operation ที่เริ่มก่อน pause และมาช้ามาก ให้เวลามันแสดงตัวก่อนตรวจ server
+    await sleep(SCHEMA_REPAIR_QUIET_MS);
+    await waitForPendingFirestoreWrites('หลัง transaction');
+    const after=await readSchemaRepairSnapshot({allowSchemaRepairPause:true});
+    if(after.schemaValue!==SPEC.schemaVersion)fail('ตรวจหลังเขียนแล้ว schemaVersion ยังไม่เป็น 2');
+    assertSchemaRepairContentUnchanged(after,stableBefore,'หลังเขียน');
+    const verified={
+      schemaVersion:after.schemaValue,
+      sessionUnchanged:true,
+      itemsUnchanged:true,
+      currentEpochItems:after.current.size,
+      currentStatuses:after.currentStatuses,
+      sessionSha256:after.sessionHash,
+      itemsSha256:after.itemsHash
+    };
+    runtime.active=false;
+    runtime.finishedAt=new Date().toISOString();
+    runtime.result='verified-reload-required';
+    const report={stage:'verified',...dryRun,cloudBackup,transactionResult,runtimePausedUntilReload:true,verified};
+    globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__=report;
+    console.group('[SRC schema repair] ✅ ซ่อมและตรวจผลสำเร็จ');
+    console.table(report);
+    console.table(verified.currentStatuses);
+    console.groupEnd();
+    console.info('หน้านี้ยังพัก background sync อยู่โดยตั้งใจ — รีโหลดหน้า SRC นี้ทันที แล้วค่อยเปิด SRC เครื่องอื่น');
+    return report;
+  }catch(e){
+    runtime.result='paused-after-error';
+    runtime.error=e.message;
+    globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__={
+      stage:'paused-after-error',
+      ...dryRun,
+      cloudBackup,
+      runtimePausedUntilReload:true,
+      error:e.message
+    };
+    console.error('[SRC schema repair] หยุดอย่างปลอดภัย — หน้านี้ยังพัก background sync อยู่ ห้ามรันซ้ำ ให้รีโหลดก่อน');
+    throw e;
   }
-  if(after.itemsHash!==before.itemsHash){
-    fail('ตรวจหลังเขียนพบว่า items เปลี่ยนระหว่างงาน — schema repair ไม่ได้เขียน items กรุณาหยุดและตรวจ concurrent client');
-  }
-  const verified={
-    schemaVersion:after.schemaValue,
-    sessionUnchanged:true,
-    itemsUnchanged:true,
-    currentEpochItems:after.current.size,
-    currentStatuses:after.currentStatuses,
-    sessionSha256:after.sessionHash,
-    itemsSha256:after.itemsHash
-  };
-  const report={stage:'verified',...dryRun,cloudBackup,transactionResult,verified};
-  globalThis.__SRC_SCHEMA_REPAIR_LAST_REPORT__=report;
-  console.group('[SRC schema repair] ✅ ซ่อมและตรวจผลสำเร็จ');
-  console.table(report);
-  console.table(verified.currentStatuses);
-  console.groupEnd();
-  console.info('รีโหลดหน้า SRC ทุกเครื่องหลังยืนยันว่า deploy รุ่นล่าสุดแล้ว');
-  return report;
 }
 async function readCloudPreflight(backup){
   const sessionRef=_db.collection('stock_sessions').doc(SPEC.branch);

@@ -242,6 +242,7 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 - Dashboard ของ schema v2 ต้อง query `items` ด้วย `countResetAt` ของ session ปัจจุบันและอ่านจาก server โดยตรง ห้ามอ่านทั้ง subcollection แบบไม่กรอง epoch; ถ้าอ่าน session/items ล้มเหลวต้องแสดง error ไม่ย้อนใช้ metadata-only blob แล้วแสดงยอด 0/ยอดบางส่วน
 - การกู้รายการที่ขาดจาก local backup ให้ใช้ `tools/recover-src-local-backup.js`: ตรวจ SHA-256 + branch + `countResetAt`, บังคับ dry-run, ดาวน์โหลดสำรอง session/items จาก Cloud ก่อนเขียน และใช้ transaction เขียนเฉพาะ SKU ที่ไม่มี document อยู่ในทุก epoch เท่านั้น ห้าม overwrite item เดิมทุกกรณี
 - ถ้า `schemaVersion` ของ session หายแต่ items รอบปัจจุบันครบแล้ว ห้าม migrate/recover ซ้ำ: ใช้ `repairSrcSchemaVersion()` ตรวจจำนวน+status+hash, สำรอง Cloud แล้ว transaction merge เฉพาะ `{schemaVersion:2}`; `session_data_json` และ items ต้อง hash เท่าเดิมหลังซ่อม
+- ก่อน schema-only repair ต้องพัก background sync/listener ของหน้า v1, ตั้ง local `_schemaVersion=2`, รอ `waitForPendingWrites()` และตรวจ server ซ้ำก่อน transaction มิฉะนั้น `syncToFirestore()` v1 ที่ตั้งเวลาไว้จะ `set()` session ทั้ง document แล้วลบ field `schemaVersion` ที่เพิ่ง merge; หลังซ่อมให้คงหน้านั้นในโหมดพักจนรีโหลด
 
 ### Pharmacy Desktop Confirm
 
