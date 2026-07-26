@@ -6589,6 +6589,9 @@ function getActiveDashBranches(){return currentBranch==='WH'?['WH']:['SRC','KKL'
 let _dashLoading=false;
 let _dashAssistantData=null;
 let _dashAssistantFilter='all';
+let _dashLastFetchAt=0;
+let _dashLastFetchScope='';
+const DASH_REFRESH_COOLDOWN_MS=60000; // กันกดรีเฟรชรัว — หนึ่งรอบอ่าน items ทั้งสาขาจาก server (~N reads)
 
 function openDashboardPopup(){
   _dashAssistantFilter='all';
@@ -6625,6 +6628,11 @@ async function _loadDashboardItemsForBranch(branch,sessionDoc){
 async function refreshDashboard(){
   if(_dashLoading)return;
   if(!_db){document.getElementById('dashboardBody').innerHTML='<div style="text-align:center;padding:60px;color:var(--red);">Firestore ไม่พร้อมใช้งาน</div>';return;}
+  const dashScope=getActiveDashBranches().join(',');
+  if(_dashLastFetchAt&&_dashLastFetchScope===dashScope&&Date.now()-_dashLastFetchAt<DASH_REFRESH_COOLDOWN_MS&&_dashAssistantData){
+    document.getElementById('dashStatus').textContent=`อัปเดต: ${formatThaiDateTime(new Date(_dashLastFetchAt))} — ใช้ข้อมูลเดิม (รีเฟรชใหม่ได้ทุก 1 นาที)`;
+    return;
+  }
   _dashLoading=true;
   document.getElementById('dashStatus').textContent='กำลังดึงข้อมูล...';
   document.getElementById('dashRefreshBtn').disabled=true;
@@ -6635,8 +6643,16 @@ async function refreshDashboard(){
       try{return{b,d:await _db.collection('stock_sessions').doc(b).get({source:'server'})};}
       catch(e){throw _dashboardReadError(b,'session',e);}
     });
+    // Audit Log จำกัดย้อนหลัง 60 วันผ่านช่วง documentId ({branch}_{YYYY-MM-DD}) —
+    // query ทั้ง collection แบบเดิมอ่านทุกวันสะสมไม่จำกัดและโตขึ้นเรื่อยๆ (กิน read quota)
+    const _cd=new Date();_cd.setDate(_cd.getDate()-60);
+    const auditCutoff=`${_cd.getFullYear()}-${String(_cd.getMonth()+1).padStart(2,'0')}-${String(_cd.getDate()).padStart(2,'0')}`;
     const auditPromises=activeBranches.map(async b=>{
-      try{return{b,s:await _db.collection('stock_audit_log').where('branch','==',b).get({source:'server'})};}
+      try{return{b,s:await _db.collection('stock_audit_log')
+        .orderBy(firebase.firestore.FieldPath.documentId())
+        .startAt(`${b}_${auditCutoff}`)
+        .endAt(`${b}_9999-99-99`)
+        .get({source:'server'})};}
       catch(e){throw _dashboardReadError(b,'Audit Log',e);}
     });
     const r01Promises=activeBranches.map(async b=>{
@@ -6652,6 +6668,7 @@ async function refreshDashboard(){
     const data=buildDashboardData(sessionResults,auditResults,r01Results,itemsByBranch);
     renderDashboard(data);
     document.getElementById('dashStatus').textContent=`อัปเดต: ${formatThaiDateTime(new Date())}`;
+    _dashLastFetchAt=Date.now();_dashLastFetchScope=dashScope;
   }catch(e){
     console.warn('[Dashboard]',e);
     document.getElementById('dashStatus').textContent='โหลดไม่สำเร็จ';
