@@ -1,0 +1,8 @@
+node_modules/
+vendor/
+firestore.rules
+test-results/
+playwright-report/
+network-audit.json
+firebase-debug.log
+firestore-debug.log

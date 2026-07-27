@@ -1,2 +1,12 @@
 stock_backup_*.json
 *.rar
+
+# ข้อมูลจริงจาก R01/R05/R16 ห้ามเข้า repo (เทสใช้ fixture สังเคราะห์ใน tests/lib/fixtures.js)
+*.CSV
+*.csv
+
+# automated tests (tests/.gitignore คุมรายละเอียดอีกชั้น)
+tests/node_modules/
+tests/vendor/
+tests/test-results/
+tests/playwright-report/

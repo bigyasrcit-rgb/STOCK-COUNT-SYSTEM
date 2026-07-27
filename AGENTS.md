@@ -247,7 +247,11 @@ Git safety:
 6. งาน ordering ต้องทดสอบหลัง listener snapshot และหลัง rebuild/reload ไม่ใช่เฉพาะทันทีหลังสแกน
 7. งาน native Android ต้อง build APK และทดสอบ Intent barcode, foreground/background, screen timeout และเสียง
 
-ไม่มี automated test suite ครบทั้งระบบ การตรวจ syntax อย่างเดียวไม่ถือว่าพอสำหรับ scan/sync change ต้องมี manual scenario ตาม flow งานจริง
+มี automated test suite ใน `tests/` (Playwright + Firestore Emulator, แยกขาดจาก production — รันได้แม้พนักงานกำลังสแกน)
+งานที่แตะ scan/sync **ต้องรัน `cd tests && npm test` ให้เขียวก่อนส่ง** และยังต้องมี manual scenario ตาม flow จริงเพิ่มด้วย
+เทสครอบ: สอง PDA ชน SKU เดียวกัน (ยอดต้องรวม), Confirm/Audit Verify บน schema v2 รวม mid-work abort, offline reconcile, สูตร effectiveQty, กฎราคา, merge rules, firestore.rules schema guard
+เทส **ไม่ครอบ**: PDA จริง (Intent scanner/keystroke/WebView/APK), composite index บน production (emulator ไม่บังคับ index), WH Count/Recheck inbox flow — สามข้อนี้ยังต้องทดสอบมือทุกครั้ง
+**ห้ามแก้ `index.html` หรือไฟล์ production เพื่อให้เทสผ่าน** — harness ต้อง adapt เข้าหาแอป ไม่ใช่ทางกลับกัน
 
 ## 13. การ deploy
 

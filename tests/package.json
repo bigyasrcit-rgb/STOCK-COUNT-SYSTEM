@@ -1,0 +1,23 @@
+{
+  "name": "stock-count-tests",
+  "private": true,
+  "description": "Automated tests for Anin Stock Count — fully isolated: Firestore Emulator only, zero production access",
+  "scripts": {
+    "setup": "node scripts/vendor-sdk.mjs && playwright install chromium",
+    "preflight": "node scripts/preflight.mjs",
+    "test": "npm run test:logic && npm run test:e2e",
+    "test:logic": "playwright test --project=logic",
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "test:headed": "node scripts/run-e2e.mjs --headed --workers=1",
+    "test:debug": "node scripts/run-e2e.mjs --debug",
+    "preemu": "node scripts/copy-rules.mjs",
+    "emu": "firebase emulators:start --only firestore --project demo-stock-count",
+    "e2e:attach": "playwright test --project=e2e",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "firebase-admin": "^13.0.0",
+    "firebase-tools": "^14.0.0"
+  }
+}
