@@ -116,14 +116,19 @@ state = {
 }
 ```
 
-### ProductMaster price และสิทธิ์กรอกจำนวน
+### กฎราคาและสิทธิ์กรอกจำนวน (ย้ายมาที่ R05.106 Col B — ก.ค. 2026)
 
-- ตอนอัปโหลด ProductMaster ให้จับ `SKU` จากคอลัมน์ A และ `unitPrice` จากคอลัมน์ J; รองรับตัวเลขที่มี comma/ช่องว่าง แล้ว sync ทั้งคู่ไปกับ `global_pm.data_json`
-- สิทธิ์กรอกจำนวน Count รอบแรก resolve ผ่าน R05.106 `Barcode` คอลัมน์ A → `SKU` คอลัมน์ E → ProductMaster `SKU` คอลัมน์ A → ราคาคอลัมน์ J
-- `unitPrice < 1000` เท่านั้นที่แสดงและยอมรับช่อง QTY แบบยอดรวมหน่วยย่อย (absolute); ราคา `>= 1000`, ค่าว่าง/อ่านไม่ได้, Unknown, DEL หรือ SKU ที่ไม่มี ProductMaster ต้องสแกนทีละชิ้น
-- กฎราคาต้องครอบทั้ง RESULT row, stock popup, `barcode,qty` และฟังก์ชันแก้จำนวนโดยใช้ `_canEnterCountQty()` จุดเดียวกัน; ห้ามนำ threshold จาก `systemQty` กลับมา
+**ราคาผูกกับ "บาร์โค้ด" ไม่ใช่ SKU** — อ่านจาก R05.106 คอลัมน์ B (ราคาต่อหน่วยของบาร์โค้ดนั้น) ผ่าน `_parseProductMasterPrice()` เดิม
+เดิมใช้ ProductMaster คอลัมน์ J ต่อ SKU · **ProductMaster คอลัมน์ J ยังอ่านอยู่แต่ไม่ใช่ตัวตัดสินกฎราคาแล้ว** (`rebuildMaps` เขียนทับ `skuMap.unitPrice` ด้วยค่าจาก R05)
+
+- **สแกน `barcode,qty`** ใช้ราคาของ**บาร์โค้ดที่ยิงจริง** (`_canEnterCountQtyPrice(scanPrice)` ใน `handleBarcode`) → บาร์โค้ดกล่องแพงถูกบล็อกได้ แม้บาร์โค้ดเม็ดของ SKU เดียวกันจะกรอกได้ · สแกน SKU ตรง (`skuDirectMap`) ใช้ราคาหน่วยเล็กสุด
+- **ช่อง QTY ใน RESULT row / stock popup** ผูกกับรายการไม่ใช่บาร์โค้ด → ใช้ `skuMap.unitPrice` ที่ `_baseUnitPrice()` derive มาจาก **บาร์โค้ดตัวคูณต่ำสุด**; ตัวคูณเท่ากันหลายอันเลือกราคาสูงสุด และถ้ามีตัวใดไม่มีราคา → `null` (บังคับสแกนทีละชิ้น)
+- `< 1000` เท่านั้นที่แสดงและยอมรับช่อง QTY แบบยอดรวมหน่วยย่อย (absolute); `>= 1000`, ค่าว่าง/อ่านไม่ได้, Unknown, หรือบาร์โค้ดที่ไม่มีใน R05 ต้องสแกนทีละชิ้น
+- **DEL กรอกได้แล้วถ้าบาร์โค้ดมีราคา < 1000** (เปลี่ยนจากเดิมที่บล็อกทุกกรณี — `_canEnterCountQty` ไม่เช็ค `isDel` อีกต่อไป)
+- กฎราคาต้องครอบทั้ง RESULT row, stock popup, `barcode,qty` และฟังก์ชันแก้จำนวน — **จุดที่ตัดสินใจว่า "แสดงช่อง input หรือไม่" (`renderScanList`, `patchScanRow`) ต้องใช้กฎเดียวกับจุดที่ตรวจ** ไม่งั้นช่องจะโผล่ให้พิมพ์แล้วค่อยเด้งปฏิเสธ; ห้ามนำ threshold จาก `systemQty` กลับมา
 - กฎนี้ไม่ใช้กับ Audit/Recheck และไม่เปลี่ยน `unitMultiplier` ของการสแกน Barcode ปกติ
-- หลัง deploy ต้องอัปโหลด ProductMaster ใหม่หนึ่งครั้งเพื่อเติม `unitPrice` ให้ `global_pm`; ข้อมูลเก่าที่ไม่มี field นี้ต้อง fallback แบบปลอดภัยเป็นสแกนทีละชิ้น
+- **หลัง deploy ต้องอัปโหลด R05.106 ใหม่หนึ่งครั้ง** เพื่อเติม `unitPrice` ให้ `global_r05` (ไฟล์กลางใช้ร่วมทุกสาขา อัปครั้งเดียวจบ) — ก่อนอัป ทุกบาร์โค้ดจะไม่มีราคา = สแกนทีละชิ้นทั้งระบบ (fail-safe โดยตั้งใจ)
+- `global_r05` แบกราคาต่อบาร์โค้ดเพิ่มและมีเพดาน 1 MiB เหมือน doc อื่น → toast ตอนอัปโหลดโชว์ขนาดจริงทุกครั้ง และเตือนเมื่อ ≥ 800 KB
 
 `_countResetAt` — module-level ISO timestamp, reset epoch (monotonic). ใช้ `>` เปรียบเทียบ lexicographic
 `_r01BaselineAt` — module-level ISO timestamp, อัพ R01 ล่าสุดบน**สาขายา**เท่านั้น (`_isPharmacyBranch()`) — ตัวตัดสิน `_isPreBaselineItem` (freeze audit/pass ที่นับก่อน baseline — audit อยู่รอดข้ามการอัพ R01 ให้เภสัชรีเช็ค) + trigger ล้าง R16 ข้ามเครื่อง ดู [[SKILL-data-files]] R01 Daily Baseline
@@ -188,7 +193,8 @@ Audit Verify ของเภสัชก็เช่นกัน — สแก�
 เมื่อนับครบทั้งสาขา (~5,400 SKU × ~305 B ≈ 1.6 MB) และบังคับให้ต้องเขียน merge เองทุกกรณี
 
 - `_schemaVersion===2` (อ่านจาก field `schemaVersion` ใน session doc) = สาขานี้ cutover แล้ว ค่าอื่น = เดิน blob path เดิมทั้งหมด
-- **rollback = ตั้ง `schemaVersion` กลับเป็น 1** โค้ด blob เดิมยังอยู่ครบ ห้ามลบจนกว่าจะผ่านรอบนับจริงอย่างน้อย 2 รอบ
+- **rollback = ตั้ง `schemaVersion` กลับเป็น 1 พร้อมคืน blob จาก `{branch}_v1_backup`** โค้ด blob เดิมยังอยู่ครบ ห้ามลบจนกว่าจะผ่านรอบนับจริงอย่างน้อย 2 รอบ
+  หลัง Publish schema guard แล้ว Browser/PDA ทำ rollback เองไม่ได้: ต้องหยุด client ทุกเครื่องและใช้สิทธิ์ผู้ดูแล หรือผ่อน Rules ชั่วคราวใน maintenance window แล้ว Publish guard กลับทันที
 - cutover ทำได้ 2 ทาง: `startNewCount()` (ตอน `scanData` ว่าง) หรือ `migrateSessionToSchemaV2()` (ระหว่างรอบนับ) — **ห้าม dual-write blob+items**
 - **SRC และ WH cutover เป็น v2 แล้ว (24 ก.ค. 2026)** ด้วย live migration · KKL/SSS ยังเป็น v1 จะ cutover ตอน `startNewCount()` ครั้งถัดไป
 - ระหว่าง migrate ต้องหยุดสแกนสาขานั้น — เครื่องที่ยังเป็น v1 เขียน session doc ด้วย `ref.set()` แบบไม่ merge
@@ -208,8 +214,12 @@ Audit Verify ของเภสัชก็เช่นกัน — สแก�
   ถ้าล้างทิ้ง สินค้า `negSys`/`systemQty===0` จะถูกมองว่า "สแกนครั้งแรก" ซ้ำแล้วบันทึก 0 อีกรอบ
 - `_reconcileScanItems()` (ทุก 60 วิ + ก่อน sync metadata) เป็น safety net หา SKU ที่ mutation site ลืม mark
 - Confirm อ่านเฉพาะ status ที่ต้องใช้ (`scanning` / `audit`) และตรวจ "เปลี่ยนกลางงาน" ด้วย `rev`
-- **`firestore.rules` ต้องเป็น `match /stock_sessions/{document=**}`** — wildcard แบบ `{document}` ไม่ครอบ subcollection
-  ต้อง Publish ใน Console **ก่อน** deploy เว็บ ไม่งั้น items ถูกปฏิเสธทั้งหมด
+- **`firestore.rules` ต้องแยก parent `stock_sessions/{document}` ออกจาก `stock_sessions/{branch}/items/{sku}`**
+  และห้ามมี recursive broad allow `{document=**}` ซ้อนอยู่ เพราะ allow ใช้แบบ OR แล้วจะข้าม schema guard
+  - parent ที่ยังเป็น v1 อัปเดตและ cutover เป็น v2 ได้ตามเดิม
+  - เมื่อค่าเดิม `schemaVersion>=2`, ค่าใหม่ต้องเป็นตัวเลขและห้ามต่ำลง; v1 `ref.set()` ที่ทำ field หายจึงถูกปฏิเสธ
+  - delete parent ยังอนุญาตเพื่อคง `clearAllData()`; Rules นี้เป็น data-integrity guard ไม่ใช่ authentication/security เต็มรูปแบบ
+  ต้อง copy Rules ไป Publish ใน Firebase Console ด้วย — แก้ไฟล์ใน Git อย่างเดียวไม่มีผลกับระบบจริง
 - composite index `countResetAt` + `status` ต้องสร้างใน Console ก่อน cutover
 
 Stage 0 safety net (blob path): `_checkSessionBlobSize()` เตือนที่ 800 KB — **เตือนอย่างเดียว ห้าม block การเขียน**
@@ -225,21 +235,22 @@ Stage 0 safety net (blob path): `_checkSessionBlobSize()` เตือนที�
 
 Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `6ccdf69`) **ยังไม่ผ่าน field test ครบ** — งานที่ค้างเรียงตามความสำคัญ:
 
-1. **ยังไม่ได้ทดสอบในสนาม 3 อย่าง** (ห้ามถือว่าเสถียรจนกว่าจะผ่าน):
-   - **สอง PDA สแกน SKU เดียวกันพร้อมกัน → ยอดต้องรวม ไม่ใช่ทับ** (จุดเสี่ยงสูงสุด — `_writeScanningItem` delta/transaction เขียนใหม่ทั้งหมด)
-   - Confirm รอบแรก + Audit Verify บน v2 (query `scanning`/`audit` + `rev` check + `writeBatch`)
-   - offline PDA สแกนค้างแล้วกลับ online → `_reconcileScanItems` push ครบ ไม่ทับของเครื่องอื่น
-2. **composite index `countResetAt` + `status`** — ยังไม่ยืนยันว่าสร้างใน Console แล้ว ถ้า Confirm error พร้อมลิงก์สร้าง index = ยังไม่มี ให้กดลิงก์สร้าง
+1. **3 เคสเสี่ยงผ่าน automated test แล้ว (ก.ค. 2026) แต่ยังไม่ผ่านสนามจริง** — ผ่าน emulator ไม่ได้แปลว่าผ่าน PDA จริง (Intent scanner, จังหวะ keystroke, เน็ตสาขา):
+   - **สอง PDA สแกน SKU เดียวกันพร้อมกัน → ยอดต้องรวม ไม่ใช่ทับ** (จุดเสี่ยงสูงสุด — `_writeScanningItem` delta/transaction) · `tests/specs/e2e/concurrent-scan.spec.js`
+   - Confirm รอบแรก + Audit Verify บน v2 (query `scanning`/`audit` + `rev` check + `writeBatch`) · `confirm-count.spec.js`, `audit-verify.spec.js`
+   - offline PDA สแกนค้างแล้วกลับ online → `_reconcileScanItems` push ครบ ไม่ทับของเครื่องอื่น · `offline-reconcile.spec.js`
+2. **composite index `countResetAt` + `status`** — ยังไม่ยืนยันว่าสร้างใน Console แล้ว ถ้า Confirm error พร้อมลิงก์สร้าง index = ยังไม่มี ให้กดลิงก์สร้าง · **automated test จับเคสนี้ไม่ได้** เพราะ emulator ไม่บังคับ index
 3. **KKL/SSS ยังเป็น v1** — จะ cutover เองตอน `startNewCount()` ครั้งถัดไป (ไม่ต้อง migrate เพราะ session เล็ก ~1 KB)
 4. **blob ก้อนอื่นยังไม่ย้าย (Stage 1b)** — `WH_counts`, `WH_rechecks`, `WH_count_confirmations`, `WH_recheck_confirmations`, `{branch}_pharmacy_audit_markers` ยังเป็น `items:{}` map ก้อนเดียว มีเพดาน 1 MiB เดียวกัน ปัจจุบันเล็ก (`WH_recheck_confirmations` ~46 KB สูงสุด) ยังไม่เร่งด่วนแต่ต้องเฝ้า
 5. **Confirm ยังคำนวณฝั่ง client → กฎ Desktop-only ยังอยู่ (Stage 2)** — ปลดได้เมื่อย้ายสูตร `effectiveQty` ไป Cloud Function
-6. **ไม่มี automated test** — ต้องทดสอบด้วยมือทุกครั้ง
+6. **มี automated test แล้ว (`tests/`) แต่ไม่แทนการทดสอบมือ** — ดู §Automated Tests ด้านล่าง; PDA จริง, composite index และ WH inbox flow ยังไม่ครอบ
 7. **เก็บกวาดหลังเสถียร:** เมื่อผ่านรอบนับจริง ≥2 รอบ ค่อยลบ blob path เดิม (`_applyCloudScanData` merge guard, blob branch ใน `syncToFirestore`/`restoreFromFirestore`) และลบ `{branch}_v1_backup` — **ห้ามลบก่อนหน้านั้น** เพราะ rollback พึ่งพาอยู่
 
 `{branch}_v1_backup` = สำเนา blob ก่อน migrate (SRC/WH) เก็บไว้จน confirm ว่า v2 เสถียร
 
 **ทุก reader ที่อ่าน `scanData` จาก session blob ต้องมี v2 branch ที่อ่านจาก items แทน** — จุดที่มีแล้ว: `syncToFirestore`, `_applyCloudScanData`/listener, `restoreFromFirestore`, `pullFromCloud`, `_removeSkuFromFirestore`, `_readBranchConfirmCloudState`, **`buildDashboardData`** (Dashboard ข้ามสาขา — เคยลืม ทำให้ SRC/WH ขึ้น 0 ขณะ SSS v1 ปกติ, แก้ ก.ค. 2026 ให้ดึง items เมื่อ `schemaVersion===2`) · ถ้าเพิ่ม reader ใหม่ที่ parse `session_data_json.scanData` ต้องเติม v2 path ด้วยเสมอ
 - Dashboard ของ schema v2 ต้อง query `items` ด้วย `countResetAt` ของ session ปัจจุบันและอ่านจาก server โดยตรง ห้ามอ่านทั้ง subcollection แบบไม่กรอง epoch; ถ้าอ่าน session/items ล้มเหลวต้องแสดง error ไม่ย้อนใช้ metadata-only blob แล้วแสดงยอด 0/ยอดบางส่วน
+- Dashboard จำกัด `stock_audit_log` ย้อนหลัง 60 วันด้วยช่วง documentId (`{branch}_{YYYY-MM-DD}` → sentinel `{branch}_9999-99-99`) และมี cooldown 60 วิ (`DASH_REFRESH_COOLDOWN_MS` — ภายใน cooldown แสดงข้อมูลเดิม ไม่ยิง server) — ห้ามกลับไป `where('branch','==',b)` ทั้ง collection เพราะอ่านทุกวันสะสมไม่จำกัดและเป็นสาเหตุ read quota เต็ม (ก.ค. 2026)
 - การกู้รายการที่ขาดจาก local backup ให้ใช้ `tools/recover-src-local-backup.js`: ตรวจ SHA-256 + branch + `countResetAt`, บังคับ dry-run, ดาวน์โหลดสำรอง session/items จาก Cloud ก่อนเขียน และใช้ transaction เขียนเฉพาะ SKU ที่ไม่มี document อยู่ในทุก epoch เท่านั้น ห้าม overwrite item เดิมทุกกรณี
 - ถ้า `schemaVersion` ของ session หายแต่ items รอบปัจจุบันครบแล้ว ห้าม migrate/recover ซ้ำ: ใช้ `repairSrcSchemaVersion()` ตรวจจำนวน+status+hash, สำรอง Cloud แล้ว transaction merge เฉพาะ `{schemaVersion:2}`; `session_data_json` และ items ต้อง hash เท่าเดิมหลังซ่อม
 - ก่อน schema-only repair ต้องพัก background sync/listener ของหน้า v1, ตั้ง local `_schemaVersion=2`, รอ `waitForPendingWrites()` และตรวจ server ซ้ำก่อน transaction มิฉะนั้น `syncToFirestore()` v1 ที่ตั้งเวลาไว้จะ `set()` session ทั้ง document แล้วลบ field `schemaVersion` ที่เพิ่ง merge; หลังซ่อมให้คงหน้านั้นในโหมดพักจนรีโหลด
@@ -259,6 +270,7 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 
 - เภสัชสแกนรีเช็คบน PDA ได้ แต่กด "✓ ยืนยัน Audit" ได้เฉพาะ Desktop — guard ด้วย `_isPdaApp()` (User-Agent) ไม่อิง viewport
 - ยอดที่สแกนเก็บใน `sd.recheckQty`/`recheckBy`/`recheckAt` (sync ผ่าน session doc) ห้ามกลับไปใช้ map ใน memory ที่ไม่ persist
+- เภสัชแก้จำนวนรีเช็คในแถว RESULT ได้ทั้ง PDA + Desktop ผ่าน `updatePharmacyRecheckQty()` (ก.ค. 2026) — เขียนทับแบบ SET + ตั้ง `manualEditAt` + `_markSkuDirty` เหมือนเส้นทางสแกน ห้ามเรียก inbox `WH_rechecks`; ขั้นต่ำ 1 — ยอด 0 ไม่รองรับตามกติกา pending>0 (ให้ใช้ ✕ รีเซ็ตรีเช็คแทน) และไม่ใช้กฎราคากับช่องนี้ (กฎราคาครอบเฉพาะ Count รอบแรก)
 - `getPharmacistAuditPendingMap()` ต้องอ่านจาก `state.scanData` เท่านั้น — `scanListMap.totalQty` เป็น countedQty รอบแรกในสาขายา ใช้ตัดสินไม่ได้
 - `_confirmPharmacyAuditBatched()` ใช้ branch lock / แบตช์ 25 / ตรวจ R01+R16 version ชุดเดียวกับ Confirm รอบแรก และ abort ทั้งชุดถ้า `recheckQty`/`recheckBy`/`recheckAt` เปลี่ยนกลางงาน
 - ก่อน apply Verify ต้องเขียน final marker; ยืนยันทีละชุดจึงเปลี่ยนเฉพาะ SKU ที่มี `recheckQty` และ Audit ที่เหลือยังอยู่ใน marker
@@ -293,6 +305,7 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 - Audit Verify บางเส้นทางยังไม่รองรับ pending quantity 0 เพราะ pending map กรอง `> 0` ห้ามแก้โดยไม่มี business rule ที่อนุมัติ
 - Firestore rules ปัจจุบันเปิด read/write ให้ collections ที่แอปใช้ การ tighten rules เป็น security/migration แยกและต้องทดสอบทุก client
 - สาขายาที่รับ R16 ผ่าน legacy session sync อาจมีเฉพาะ aggregate maps ไม่มี raw TRANDATE timeline; ห้ามสมมติว่าป้ายวันที่ R16 ตรงกันแล้ว derived result ทุกเครื่องจะตรงโดยอัตโนมัติ
+- **Firestore quota (ก.ค. 2026):** Spark 50K reads/วันเคยเต็มช่วงรอบนับ (ประเมิน ~178K reads/วันนับทั้งระบบ) — ทางแก้หลักคืออยู่บนแผน Blaze (โควต้าฟรีรายวันยังได้เท่าเดิม + budget alert) จุดกิน read ใหญ่ที่ยังไม่แก้และเป็น backlog (ทุกข้อแตะ scan-related ต้องขอ approve กฎ 1 + field test): login สาขา v2 อ่าน items ซ้ำ 2 รอบ (`_loadScanItemsFromCloud` + listener initial ≈ 2×N/reload), ไม่ได้เปิด Firestore offline persistence, Pharmacy Confirm อ่าน server 3 รอบ (integrity check — ห้ามลดโดยพลการ), `WH_counts` เขียนทุกสแกนไม่ debounce (echo 1 read/สแกนไป Supervisor) · `startNewCount` สาขา v2 กิน ~N deletes + ~N reads ต่อครั้ง อย่ารันสองสาขาวันเดียวกันบน Spark
 
 ---
 
@@ -305,6 +318,28 @@ python -m http.server 8080
 ```
 
 ไม่มี build step — เปิด `index.html` ใน browser ได้เลย
+
+---
+
+## Automated Tests (`tests/` — ก.ค. 2026)
+
+Playwright + Firestore Emulator **แยกขาดจาก production 100%** รันได้แม้ขณะพนักงานกำลังสแกน (ไม่แตะข้อมูลจริง ไม่กินโควต้า) — รายละเอียดเต็มใน `tests/README.md`
+
+```powershell
+cd tests
+npm install && npm run setup && npm run preflight   # ครั้งแรกเท่านั้น (ต้องมี Java 11+ สำหรับ emulator)
+npm run test:logic   # ~7 วิ ไม่ใช้ emulator — inner loop ตอนแก้สูตร/merge
+npm test             # ทั้งหมด (logic + e2e ผ่าน emulator)
+```
+
+**ห้ามพังหลักการเหล่านี้เวลาเพิ่ม/แก้เทส:**
+- **ห้ามแก้ไฟล์ production เพื่อให้เทสผ่าน** — redirect ไป emulator ทำโดย inject script ตอนเสิร์ฟ (`tests/lib/static-server.mjs` + `routes.js`) `index.html` ต้องไม่มีโค้ดรู้จักเทสเลย
+- inject ต้องทำที่ static server **ไม่ใช่ `route.fulfill`** — document ที่ fulfill ผ่าน Playwright เสีย address space แล้ว Chromium บล็อก fetch ข้ามพอร์ตไป emulator (ERR_FAILED)
+- ทุกเทสปิดด้วย `closeApp()` ซึ่ง assert ว่าไม่มี request ออกนอก `127.0.0.1` — ถ้าลบ assert นี้ isolation หายทันที
+- ห้าม sleep: ใช้ `waitForFunction(..., {polling:100})` + `waitForDoc()` · บังคับ flush ด้วย `_flushDirtySkus()` · offline ต้องปลด `_scanItemBackoffUntil` ก่อน flush
+- fixture ต้องสังเคราะห์เท่านั้น (`tests/lib/fixtures.js`) — ห้ามนำ CSV ข้อมูลจริงเข้า repo (root `.gitignore` กัน `*.csv` ไว้แล้ว)
+
+**เทสแทนการทดสอบมือไม่ได้ในเรื่องเหล่านี้:** PDA จริง (Intent scanner/keystroke/WebView/เสียง/APK), composite index บน production (emulator ไม่บังคับ), KKL/SSS v1 blob path เต็มรูปแบบ, WH Count/Recheck inbox flow
 
 ---
 

@@ -72,9 +72,16 @@ Re-upload R01 บน**สาขายา** (`_isPharmacyBranch()` → SRC/KKL/SS
 | Col | Index | Field |
 |---|---|---|
 | A | 0 | Barcode |
+| **B** | **1** | **unitPrice — ราคาต่อหน่วยของบาร์โค้ดนั้น (ตัวตัดสินกฎกรอกจำนวน ตั้งแต่ ก.ค. 2026)** |
 | E | 4 | SKU |
 | G | 6 | unitName |
 | H | 7 | unitMultiplier |
+
+⚠️ อย่าสับสนกับ **R05.105** ซึ่งเป็นไฟล์ราคาคนละตัว (ใช้แนบในใบปรับปรุงสต็อก: ColB=SKU, ColE=หน่วย, ColH=ราคา, กรอง ColF===4)
+
+- ราคาว่าง/อ่านไม่ออก → `null` = ต้องสแกนทีละชิ้น (fail-safe) · แถวที่ไม่มี Barcode หรือ SKU ถูกข้ามเหมือนเดิม
+- `rebuildMaps()` เก็บราคาไว้ทั้งสองระดับ: ต่อบาร์โค้ดใน `skuMap.barcodes[].unitPrice` (ใช้ตอนสแกน) และต่อรายการใน `skuMap.unitPrice` ที่ `_baseUnitPrice()` เลือกจากบาร์โค้ดตัวคูณต่ำสุด (ใช้คุมช่อง QTY)
+- `global_r05` เป็น doc กลางใช้ร่วมทุกสาขา มีเพดาน 1 MiB — toast ตอนอัปโหลดโชว์ขนาดจริงและเตือนที่ 800 KB
 
 ### R16.104 — Document Types (Col C)
 

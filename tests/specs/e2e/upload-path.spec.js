@@ -30,6 +30,7 @@ test.describe('CSV upload path', () => {
 
     const parsed = await app.page.evaluate(() => ({
       norm: state.skuMap.get('S-NORM'),
+      normBox: state.skuMap.get('S-NORM').barcodes.find((b) => b.barcode === 'B-NORM-BOX'),
       pricey: state.skuMap.get('S-PRICEY'),
       noPrice: state.skuMap.get('S-NOPRICE'),
       neg: state.skuMap.get('S-NEG'),
@@ -39,13 +40,15 @@ test.describe('CSV upload path', () => {
       multiplier: (state.skuMap.get('S-MULTI').barcodes.find((b) => b.barcode === 'B-M24') || {}).unitMultiplier,
     }));
 
-    expect(parsed.norm.unitPrice).toBe(50);          // PM col J
+    expect(parsed.norm.unitPrice).toBe(50);          // R05 col B of the smallest-unit barcode
+    expect(parsed.normBox.unitPrice).toBe(1500);     // per-barcode price kept alongside the multiplier
     expect(parsed.norm.systemQty).toBe(10);          // R01 col G
     expect(parsed.pricey.unitPrice).toBe(1500);
     expect(parsed.noPrice.unitPrice).toBeNull();     // blank price → null → must scan one by one
     expect(parsed.neg.systemQty).toBe(0);            // pharmacy clamps negative to 0
     expect(parsed.neg.negSys).toBeTruthy();
     expect(parsed.delItem.isDel).toBe(true);         // in R01 but not in ProductMaster
+    expect(parsed.delItem.unitPrice).toBe(40);       // DEL still gets a price from R05
     expect(parsed.catP.isP).toBe(true);              // PM col D = 'P'
     expect(parsed.barcodeToSku).toBe('S-MULTI');     // R05 col A → col E
     expect(parsed.multiplier).toBe(24);              // R05 col H

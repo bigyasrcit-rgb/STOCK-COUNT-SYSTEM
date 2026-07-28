@@ -2636,10 +2636,17 @@ function loadR01(event) {
 function loadR05(event) {
   const file=event.target.files[0]; if(!file)return;
   parseFile(file,rows=>{
-    state.r05Data=[]; let sk=0;
-    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const a=(r[0]??'').toString().trim();const e=(r[4]??'').toString().trim();const g=(r[6]??'').toString().trim();const h=(r[7]??'').toString().replace(/,|\s/g,'').trim();if(!a||!e){sk++;continue;}state.r05Data.push({barcode:a,colE:e,unitName:g,unitMultiplier:h===''?1:(isFinite(+h)&&+h>0?+h:1)});}
+    state.r05Data=[]; let sk=0,priced=0;
+    // Col B = ราคาต่อหน่วยของบาร์โค้ดนั้น — เป็นตัวตัดสินสิทธิ์กรอกจำนวน (ก.ค. 2026 ย้ายมาจาก ProductMaster Col J)
+    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const a=(r[0]??'').toString().trim();const e=(r[4]??'').toString().trim();const g=(r[6]??'').toString().trim();const h=(r[7]??'').toString().replace(/,|\s/g,'').trim();if(!a||!e){sk++;continue;}const unitPrice=_parseProductMasterPrice(r[1]);if(unitPrice!==null)priced++;state.r05Data.push({barcode:a,colE:e,unitName:g,unitMultiplier:h===''?1:(isFinite(+h)&&+h>0?+h:1),unitPrice});}
     document.getElementById('badgeR05').textContent='Ready';
-    rebuildMaps(); toast(`R05.106: ${state.r05Data.length} รายการ`+(sk?` (ข้าม ${sk})`:''),'success'); saveSession(); _lastAppliedR05Json=JSON.stringify(state.r05Data); syncMasterToFirestore(true,false);
+    rebuildMaps();
+    _lastAppliedR05Json=JSON.stringify(state.r05Data);
+    // global_r05 มีเพดาน 1 MiB เท่ากับ doc อื่น และตอนนี้แบกราคาต่อบาร์โค้ดเพิ่ม — โชว์ขนาดจริงทุกครั้งที่อัป
+    const _r05Kb=Math.round(_sessionBlobBytes(_lastAppliedR05Json)/1024);
+    toast(`R05.106: ${state.r05Data.length} รายการ · พบราคา ${priced} · ${_r05Kb} KB`+(sk?` (ข้าม ${sk})`:''),'success',4000);
+    if(_r05Kb>=800)toast(`⚠️ R05 ${_r05Kb} KB ใกล้เพดาน Firestore 1 MB — แจ้งผู้ดูแลระบบ`,'warn',8000);
+    saveSession(); syncMasterToFirestore(true,false);
   });
 }
 function loadR16(event) {
@@ -3470,7 +3477,11 @@ function rebuildMaps() {
   skuSource.forEach(r=>{if(!state.skuMap.has(r.sku)){const pn=r.productName||r01NameMap.get(r.sku)||r.sku;const q0=qtyMap.get(r.sku)??0;const neg=_clampNeg&&q0<0;state.skuMap.set(r.sku,{sku:r.sku,productName:pn,unitPrice:_parseProductMasterPrice(r.unitPrice),systemQty:neg?0:q0,negSys:neg,barcodes:[],isDel:false,isP:r.cat==='P',cat:r.cat||''});}});
   // R01 items not in Product Master → DEL (ถูกตัดออกจาก PM แต่ยังมีสต็อกจริง)
   if(state.productMasterData.length&&state.r01Data.length){const pmSet=new Set(state.productMasterData.map(r=>r.sku));state.r01Data.forEach(r=>{if(!pmSet.has(r.colE)&&!state.skuMap.has(r.colE)){const neg=_clampNeg&&r.systemQty<0;state.skuMap.set(r.colE,{sku:r.colE,productName:r.productName||r.colE,unitPrice:null,systemQty:neg?0:r.systemQty,negSys:neg,barcodes:[],isDel:true,cat:''});}});}
-  state.r05Data.forEach(r=>{if(state.skuMap.has(r.colE)){state.skuMap.get(r.colE).barcodes.push({barcode:r.barcode,unitName:r.unitName,unitMultiplier:r.unitMultiplier});state.barcodeMap.set(r.barcode,r.colE);}});
+  state.r05Data.forEach(r=>{if(state.skuMap.has(r.colE)){state.skuMap.get(r.colE).barcodes.push({barcode:r.barcode,unitName:r.unitName,unitMultiplier:r.unitMultiplier,unitPrice:r.unitPrice});state.barcodeMap.set(r.barcode,r.colE);}});
+  // กฎราคาย้ายมาที่ R05 Col B (ก.ค. 2026): ราคาผูกกับ "บาร์โค้ด" ไม่ใช่ SKU
+  // skuInfo.unitPrice = ราคาของบาร์โค้ดหน่วยเล็กสุด ใช้คุมช่อง QTY ในแถว/ป็อปอัพ (ซึ่งเป็นยอดรวมหน่วยย่อย)
+  // ส่วนการสแกน `barcode,qty` ใช้ราคาของบาร์โค้ดที่ยิงจริง — ดู handleBarcode
+  state.skuMap.forEach(si=>{si.unitPrice=_baseUnitPrice(si.barcodes);});
   buildSkuDirectMap();
   const active=[...state.skuMap.keys()];
   _cachedActiveSkus=active;
@@ -3665,15 +3676,31 @@ function _parseProductMasterPrice(value){
   const price=Number(raw);
   return Number.isFinite(price)&&price>=0?price:null;
 }
-function _canEnterCountQty(skuInfo){
-  return !!skuInfo&&!skuInfo.isDel&&Number.isFinite(skuInfo.unitPrice)
-    &&skuInfo.unitPrice>=0&&skuInfo.unitPrice<COUNT_QTY_PRICE_LIMIT;
+// ราคาสำหรับช่องกรอกจำนวนระดับรายการ = ราคาบาร์โค้ด "หน่วยเล็กสุด" (ตัวคูณต่ำสุด)
+// ตัวคูณเท่ากันหลายบาร์โค้ด → เลือกราคาสูงสุด และถ้ามีตัวไหนไม่มีราคา → คืน null (บังคับสแกนทีละชิ้น)
+function _baseUnitPrice(barcodes){
+  if(!barcodes||!barcodes.length)return null;
+  let bestMult=Infinity,best=null;
+  for(const b of barcodes){
+    const mult=Number(b.unitMultiplier)>0?Number(b.unitMultiplier):1;
+    const price=Number.isFinite(b.unitPrice)?b.unitPrice:null;
+    if(mult<bestMult){bestMult=mult;best=price;continue;}
+    if(mult===bestMult)best=(best===null||price===null)?null:Math.max(best,price);
+  }
+  return best;
 }
-function _rejectRestrictedCountQty(skuInfo){
+function _canEnterCountQtyPrice(price){
+  return Number.isFinite(price)&&price>=0&&price<COUNT_QTY_PRICE_LIMIT;
+}
+function _canEnterCountQty(skuInfo){
+  return !!skuInfo&&_canEnterCountQtyPrice(skuInfo.unitPrice);
+}
+// price = ราคาที่ใช้ตัดสินจริง (ของบาร์โค้ดที่ยิง หรือของหน่วยเล็กสุด) — null/ไม่มี = หาราคาไม่เจอ
+function _rejectRestrictedCountQty(price){
   beepWarn();
-  const msg=Number.isFinite(skuInfo?.unitPrice)
+  const msg=Number.isFinite(price)
     ?'สินค้าราคา 1,000 บาทขึ้นไป ต้องสแกนทีละชิ้น'
-    :'ไม่พบราคาที่ถูกต้องใน ProductMaster ต้องสแกนทีละชิ้น';
+    :'ไม่พบราคาที่ถูกต้องใน R05.106 ต้องสแกนทีละชิ้น';
   toast(msg,'warn',3500);
 }
 
@@ -4424,16 +4451,18 @@ function handleBarcode(parsed,immediateRender=true){
 
   const skuInfo=state.skuMap.get(sku);if(!skuInfo)return;
 
-  let mult, unitName;
+  let mult, unitName, scanPrice;
   if (resolvedFromSku) {
     const directEntry = state.skuDirectMap.get(sku);
     mult     = 1;
     unitName = directEntry ? directEntry.unitName : '';
+    scanPrice= skuInfo.unitPrice; // ยิง SKU ตรง = ใช้บาร์โค้ดหน่วยเล็กสุด → ราคาเดียวกับที่คุมช่อง QTY
     toast(`🔍 สแกน SKU: ${sku} → ใช้ Barcode ${resolvedBarcode} (หน่วยเล็กสุด)`, 'info');
   } else {
     const bcInfo=skuInfo.barcodes.find(b=>b.barcode===resolvedBarcode);
     mult    =bcInfo?bcInfo.unitMultiplier:1;
     unitName=bcInfo?bcInfo.unitName:'';
+    scanPrice=bcInfo?bcInfo.unitPrice:null;
   }
 
   const sd=state.scanData.get(sku);if(!sd)return;
@@ -4471,10 +4500,11 @@ function handleBarcode(parsed,immediateRender=true){
     scheduleSave();if(immediateRender){scheduleScanListRender();scheduleStats();scheduleRender();}return;
   }
 
-  // กฎกรอกจำนวนใช้เฉพาะ Count รอบแรก: ราคา ProductMaster < 1,000 บาทเท่านั้น
-  // WH Recheck/Audit ด้านบนคงสิทธิ์แก้ recheckQty ตาม flow เดิม
-  if(qty!==null&&!_canEnterCountQty(skuInfo)){
-    _rejectRestrictedCountQty(skuInfo);
+  // กฎกรอกจำนวนใช้เฉพาะ Count รอบแรก: ราคาของ "บาร์โค้ดที่ยิง" (R05.106 Col B) < 1,000 บาทเท่านั้น
+  // บาร์โค้ดกล่องแพงถูกบล็อกได้แม้บาร์โค้ดเม็ดของ SKU เดียวกันจะกรอกได้ — ตรงเจตนาที่ว่าหนึ่งสแกน = หนึ่งมูลค่า
+  // WH Recheck/Audit ด้านบนคงสิทธิ์แก้ recheckQty ตาม flow เดิม (ไม่ใช้กฎราคา)
+  if(qty!==null&&!_canEnterCountQtyPrice(scanPrice)){
+    _rejectRestrictedCountQty(scanPrice);
     return;
   }
 
@@ -4831,7 +4861,7 @@ function patchScanRow(key){
 function updateInlineQty(sku,v){
   if(_blockScanForBranchConfirm())return;
   const skuInfo=state.skuMap.get(sku);
-  if(!_canEnterCountQty(skuInfo)){_rejectRestrictedCountQty(skuInfo);return;}
+  if(!_canEnterCountQty(skuInfo)){_rejectRestrictedCountQty(skuInfo?.unitPrice);return;}
   const q=parseFloat(v);if(isNaN(q)||q<0)return;
   const sd=state.scanData.get(sku);if(!sd||sd.status!=='scanning')return;
   sd.countedQty=q;sd.manualEditAt=Date.now();
@@ -4886,7 +4916,7 @@ function updatePharmacyRecheckQty(sku,v){
 function updatePopupQty(sku,v){
   if(_blockScanForBranchConfirm())return;
   const skuInfo=state.skuMap.get(sku);
-  if(!_canEnterCountQty(skuInfo)){_rejectRestrictedCountQty(skuInfo);return;}
+  if(!_canEnterCountQty(skuInfo)){_rejectRestrictedCountQty(skuInfo?.unitPrice);return;}
   const q=parseFloat(v);if(isNaN(q)||q<0)return;
   const sd=state.scanData.get(sku);if(!sd)return;
   if(['pass','audit','audit_check','stock_adjustment'].includes(sd.status))return;

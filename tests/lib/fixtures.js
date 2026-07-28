@@ -2,31 +2,40 @@
 // Row shapes mirror what the app's own loaders produce (and what the cloud master docs store):
 //   PM  (loadProductMaster index.html:2601): { sku, productName, unitPrice, cat? }
 //   R01 (loadR01 :2616):                     { colE, productName, systemQty }
-//   R05 (loadR05 :2640):                     { barcode, colE, unitName, unitMultiplier }
+//   R05 (loadR05 :2640):                     { barcode, colE, unitName, unitMultiplier, unitPrice }
+//
+// The count-quantity price gate reads R05 unitPrice (per barcode), NOT the ProductMaster price —
+// so barcode prices below are what the price-gate specs assert on. PM prices are kept only to prove
+// they no longer drive the gate.
 
 const pmRows = [];
 const r01Rows = [];
 const r05Rows = [];
 
-function add({ sku, name, price = 10, cat = '', sys = 1, barcodes = [[sku + '-B', 'TAB', 1]], inPm = true }) {
+// barcodes: [barcode, unitName, unitMultiplier, unitPrice]
+function add({ sku, name, price = 10, cat = '', sys = 1, barcodes = [[sku + '-B', 'TAB', 1, 10]], inPm = true }) {
   if (inPm) pmRows.push({ sku, productName: name, unitPrice: price, ...(cat ? { cat } : {}) });
   r01Rows.push({ colE: sku, productName: name, systemQty: sys });
-  for (const [barcode, unitName, unitMultiplier] of barcodes) r05Rows.push({ barcode, colE: sku, unitName, unitMultiplier });
+  for (const [barcode, unitName, unitMultiplier, unitPrice] of barcodes) {
+    r05Rows.push({ barcode, colE: sku, unitName, unitMultiplier, unitPrice: unitPrice === undefined ? null : unitPrice });
+  }
 }
 
-add({ sku: 'S-NORM',   name: 'Test Paracetamol 500', price: 50,     sys: 10, barcodes: [['B-NORM', 'TAB', 1], ['B-NORM-BOX', 'BOX', 12]] });
-add({ sku: 'S-PRICEY', name: 'Test Expensive Serum', price: 1500,   sys: 5,  barcodes: [['B-PRICEY', 'EA', 1]] });
-add({ sku: 'S-NOPRICE',name: 'Test No Price Item',   price: null,   sys: 8,  barcodes: [['B-NOPRICE', 'EA', 1]] });
-add({ sku: 'S-ZERO',   name: 'Test Zero Stock Med',  price: 20,     sys: 0,  barcodes: [['B-ZERO', 'TAB', 1]] });
-add({ sku: 'S-NEG',    name: 'Test Negative Stock',  price: 20,     sys: -3, barcodes: [['B-NEG', 'TAB', 1]] });
-add({ sku: 'S-MULTI',  name: 'Test Multi Pack',      price: 100,    sys: 60, barcodes: [['B-M1', 'TAB', 1], ['B-M6', 'STRIP', 6], ['B-M24', 'BOX', 24]] });
-add({ sku: 'S-CATA',   name: 'Test Controlled A',    price: 30, cat: 'A', sys: 4, barcodes: [['B-CATA', 'TAB', 1]] });
-add({ sku: 'S-CATP',   name: 'Test Psychotropic P',  price: 30, cat: 'P', sys: 4, barcodes: [['B-CATP', 'TAB', 1]] });
-add({ sku: 'S-999',    name: 'Test Boundary 999',    price: 999.99, sys: 3,  barcodes: [['B-999', 'EA', 1]] });
-add({ sku: 'S-1000',   name: 'Test Boundary 1000',   price: 1000,   sys: 3,  barcodes: [['B-1000', 'EA', 1]] });
-add({ sku: 'S-ONLYR01',name: 'Test R01 Only',        inPm: false,   sys: 6,  barcodes: [['B-ONLYR01', 'EA', 1]] });
+// cheap tablet + expensive box: the tablet may take a typed qty, the box may not
+add({ sku: 'S-NORM',   name: 'Test Paracetamol 500', price: 50,   sys: 10, barcodes: [['B-NORM', 'TAB', 1, 50], ['B-NORM-BOX', 'BOX', 12, 1500]] });
+add({ sku: 'S-PRICEY', name: 'Test Expensive Serum', price: 20,   sys: 5,  barcodes: [['B-PRICEY', 'EA', 1, 1500]] });
+add({ sku: 'S-NOPRICE',name: 'Test No Price Item',   price: 50,   sys: 8,  barcodes: [['B-NOPRICE', 'EA', 1, null]] });
+add({ sku: 'S-ZERO',   name: 'Test Zero Stock Med',  price: 20,   sys: 0,  barcodes: [['B-ZERO', 'TAB', 1, 20]] });
+add({ sku: 'S-NEG',    name: 'Test Negative Stock',  price: 20,   sys: -3, barcodes: [['B-NEG', 'TAB', 1, 20]] });
+add({ sku: 'S-MULTI',  name: 'Test Multi Pack',      price: 100,  sys: 60, barcodes: [['B-M1', 'TAB', 1, 100], ['B-M6', 'STRIP', 6, 600], ['B-M24', 'BOX', 24, 2400]] });
+add({ sku: 'S-CATA',   name: 'Test Controlled A',    price: 30, cat: 'A', sys: 4, barcodes: [['B-CATA', 'TAB', 1, 30]] });
+add({ sku: 'S-CATP',   name: 'Test Psychotropic P',  price: 30, cat: 'P', sys: 4, barcodes: [['B-CATP', 'TAB', 1, 30]] });
+add({ sku: 'S-999',    name: 'Test Boundary 999',    price: 10,   sys: 3,  barcodes: [['B-999', 'EA', 1, 999.99]] });
+add({ sku: 'S-1000',   name: 'Test Boundary 1000',   price: 10,   sys: 3,  barcodes: [['B-1000', 'EA', 1, 1000]] });
+// DEL item (in R01, not in ProductMaster) — now allowed to take a qty when its barcode is cheap
+add({ sku: 'S-ONLYR01',name: 'Test R01 Only',        inPm: false, sys: 6,  barcodes: [['B-ONLYR01', 'EA', 1, 40]] });
 for (let i = 1; i <= 9; i++) {
-  add({ sku: `S-F0${i}`, name: `Test Filler ${i}`, price: 10, sys: i, barcodes: [[`B-F0${i}`, 'EA', 1]] });
+  add({ sku: `S-F0${i}`, name: `Test Filler ${i}`, price: 10, sys: i, barcodes: [[`B-F0${i}`, 'EA', 1, 10]] });
 }
 
 // CSV emitters matching the exact column positions the file parsers read.
@@ -45,10 +54,12 @@ function toR01Csv() {
   for (const r of r01Rows) rows.push(['', '', '', '', r.colE, r.productName, String(r.systemQty)]);
   return joinRows(rows);
 }
-// R05: col0=barcode, col4=colE, col6=unitName, col7=unitMultiplier
+// R05: col0=barcode, col1=unitPrice, col4=colE, col6=unitName, col7=unitMultiplier
 function toR05Csv() {
-  const rows = [['BARCODE', 'C1', 'C2', 'C3', 'COLE', 'C5', 'UNIT', 'MULT']];
-  for (const r of r05Rows) rows.push([r.barcode, '', '', '', r.colE, '', r.unitName, String(r.unitMultiplier)]);
+  const rows = [['BARCODE', 'PRICE', 'C2', 'C3', 'COLE', 'C5', 'UNIT', 'MULT']];
+  for (const r of r05Rows) {
+    rows.push([r.barcode, r.unitPrice == null ? '' : String(r.unitPrice), '', '', r.colE, '', r.unitName, String(r.unitMultiplier)]);
+  }
   return joinRows(rows);
 }
 
