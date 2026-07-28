@@ -82,6 +82,7 @@ Re-upload R01 บน**สาขายา** (`_isPharmacyBranch()` → SRC/KKL/SS
 - ราคาว่าง/อ่านไม่ออก → `null` = ต้องสแกนทีละชิ้น (fail-safe) · แถวที่ไม่มี Barcode หรือ SKU ถูกข้ามเหมือนเดิม
 - `rebuildMaps()` เก็บราคาไว้ทั้งสองระดับ: ต่อบาร์โค้ดใน `skuMap.barcodes[].unitPrice` (ใช้ตอนสแกน) และต่อรายการใน `skuMap.unitPrice` ที่ `_baseUnitPrice()` เลือกจากบาร์โค้ดตัวคูณต่ำสุด (ใช้คุมช่อง QTY)
 - `global_r05` เป็น doc กลางใช้ร่วมทุกสาขา มีเพดาน 1 MiB — toast ตอนอัปโหลดโชว์ขนาดจริงและเตือนที่ 800 KB
+- **เก็บบน cloud เป็น array-of-arrays** `[[barcode,SKU,unitName,mult,price],...]` (`format:'r05a1'`) — object form ที่ 10,619 บาร์โค้ด = 1,069 KB **เกินเพดานจริง** เขียน/อ่านผ่าน `_serializeR05()` / `_parseR05Json()` เท่านั้น (parser ยังรองรับ object form เดิม)
 
 ### R16.104 — Document Types (Col C)
 

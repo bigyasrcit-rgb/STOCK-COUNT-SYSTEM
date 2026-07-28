@@ -2257,6 +2257,28 @@ function startProductMasterListener(){
   },err=>console.warn('Firestore product master listen:',err.message));
 }
 // ─── R05 real-time sync (global — ใช้ร่วมทุกสาขา, mirror PM) — อัพ R05 เครื่องนึง → ทุกสาขาเห็นทันที ───
+// เก็บบน cloud เป็น array-of-arrays ไม่ใช่ object: ชื่อ field ซ้ำทุกแถว ~57 bytes × 10,600 บาร์โค้ด
+// ทำให้ doc ชน 1 MiB แล้ว Firestore ปฏิเสธการเขียนเงียบๆ (ก.ค. 2026 — เจอจริงตอนเพิ่มราคาต่อบาร์โค้ด)
+// รูปแบบเก่า (object) ยัง parse ได้ ห้ามถอด fallback จนกว่าทุกสาขาจะอัป R05 ใหม่แล้ว
+const R05_CLOUD_FORMAT='r05a1';
+function _serializeR05(rows){
+  return JSON.stringify((rows||[]).map(r=>[r.barcode,r.colE,r.unitName||'',r.unitMultiplier,r.unitPrice==null?'':r.unitPrice]));
+}
+function _parseR05Json(json){
+  const arr=JSON.parse(json);
+  if(!Array.isArray(arr))return [];
+  return arr.map(r=>{
+    const compact=Array.isArray(r);
+    const mult=Number(compact?r[3]:r.unitMultiplier);
+    return{
+      barcode:compact?r[0]:r.barcode,
+      colE:compact?r[1]:r.colE,
+      unitName:(compact?r[2]:r.unitName)||'',
+      unitMultiplier:mult>0?mult:1,
+      unitPrice:_parseProductMasterPrice(compact?r[4]:r.unitPrice)
+    };
+  }).filter(r=>r.barcode&&r.colE);
+}
 let _r05Unsubscribe=null,_r05ListenerReady=false,_lastAppliedR05Json='';
 function stopR05Listener(){
   if(_r05Unsubscribe){_r05Unsubscribe();_r05Unsubscribe=null;}
@@ -2271,7 +2293,7 @@ function startR05Listener(){
     if(!dj||dj===_lastAppliedR05Json){_r05ListenerReady=true;return;} // ไม่เปลี่ยน/own-write → ข้าม
     try{
       _lastAppliedR05Json=dj;
-      state.r05Data=JSON.parse(dj);
+      state.r05Data=_parseR05Json(dj);
       document.getElementById('badgeR05').textContent='Ready';
       rebuildMaps(); // สร้าง barcodeMap ใหม่ — preserve scanData (if(!has) guard) → ของที่นับไม่กระทบ
       if(_r05ListenerReady){saveSession();toast('R05.106 อัปเดตจากเครื่องอื่น','info');}
@@ -2641,7 +2663,9 @@ function loadR05(event) {
     for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const a=(r[0]??'').toString().trim();const e=(r[4]??'').toString().trim();const g=(r[6]??'').toString().trim();const h=(r[7]??'').toString().replace(/,|\s/g,'').trim();if(!a||!e){sk++;continue;}const unitPrice=_parseProductMasterPrice(r[1]);if(unitPrice!==null)priced++;state.r05Data.push({barcode:a,colE:e,unitName:g,unitMultiplier:h===''?1:(isFinite(+h)&&+h>0?+h:1),unitPrice});}
     document.getElementById('badgeR05').textContent='Ready';
     rebuildMaps();
-    _lastAppliedR05Json=JSON.stringify(state.r05Data);
+    // ต้อง serialize ด้วยรูปแบบเดียวกับที่เขียนขึ้น cloud ไม่งั้น echo guard ของ listener พัง
+    // (dj !== _lastAppliedR05Json ตลอด → เด้ง "อัปเดตจากเครื่องอื่น" ทุกครั้งแล้วทับ state ตัวเอง)
+    _lastAppliedR05Json=_serializeR05(state.r05Data);
     // global_r05 มีเพดาน 1 MiB เท่ากับ doc อื่น และตอนนี้แบกราคาต่อบาร์โค้ดเพิ่ม — โชว์ขนาดจริงทุกครั้งที่อัป
     const _r05Kb=Math.round(_sessionBlobBytes(_lastAppliedR05Json)/1024);
     toast(`R05.106: ${state.r05Data.length} รายการ · พบราคา ${priced} · ${_r05Kb} KB`+(sk?` (ข้าม ${sk})`:''),'success',4000);
@@ -5434,9 +5458,14 @@ async function syncMasterToFirestore(includeR05=true,includeR01=true){
     if(includeR01)writes.push(_db.collection('stock_sessions').doc(id+'_r01').set({data_json:JSON.stringify(state.r01Data),r01UploadedAt:state.r01UploadedAt||'',r01Version:state.r01Version||'',updated_at:firebase.firestore.FieldValue.serverTimestamp()},{merge:true}));
     // R05 เขียน cloud เฉพาะตอนอัพ R05 จริง (loadR05) — login/loadR01 ไม่ push (กันของเก่าทับ cloud ที่ listener จะ propagate)
     // global doc (ไม่ผูก branch) — สาขาไหนอัพก็ได้ ทุกสาขาเห็นร่วมกัน (mirror global_pm)
-    if(includeR05)writes.push(getR05Ref().set({data_json:JSON.stringify(state.r05Data),updated_at:firebase.firestore.FieldValue.serverTimestamp()}));
+    if(includeR05)writes.push(getR05Ref().set({data_json:_serializeR05(state.r05Data),format:R05_CLOUD_FORMAT,row_count:state.r05Data.length,updated_at:firebase.firestore.FieldValue.serverTimestamp()}));
     await Promise.all(writes);
-  }catch(e){console.warn('Firestore master sync:',e.message);}
+  }catch(e){
+    console.warn('Firestore master sync:',e.message);
+    // เงียบไม่ได้: R05 ที่เขียนไม่ผ่าน (เช่นชนเพดาน 1 MiB) จะถูก listener ดึงของเก่ากลับมาทับทันที
+    // แล้วผู้ใช้เห็นแค่ "อัปเดตจากเครื่องอื่น" โดยไม่รู้ว่าไฟล์ที่เพิ่งอัปหายไป
+    if(includeR05)toast(`อัปโหลด R05 ขึ้น Cloud ไม่สำเร็จ (${e.message}) — ข้อมูลยังไม่ถูกบันทึก กรุณาแจ้งผู้ดูแลระบบ`,'error',10000);
+  }
 }
 
 // วันที่อัพ R16 — เขียนลง master doc เดียวกับ R01 (ไม่ใช่ session doc ที่ syncToFirestore ทับทุก ~3s จากทุกเครื่อง)
@@ -5496,7 +5525,7 @@ async function restoreMasterFromFirestore(force=false){
         getR05Ref().get() // global doc — ไม่ผูก branch
       ]);
       if(r01Doc.exists&&r01Doc.data().data_json){state.r01Data=JSON.parse(r01Doc.data().data_json);state.r01Version=r01Doc.data().r01Version||'';document.getElementById('badgeR01').textContent='Ready';const uploadedAt=_r01UploadedAtFromDocData(r01Doc.data());if(uploadedAt)_setR01Ts(uploadedAt);_applyR16MetaFromDoc(r01Doc.data());}
-      if(r05Doc.exists){state.r05Data=JSON.parse(r05Doc.data().data_json);document.getElementById('badgeR05').textContent='Ready';}
+      if(r05Doc.exists){state.r05Data=_parseR05Json(r05Doc.data().data_json);_lastAppliedR05Json=r05Doc.data().data_json;document.getElementById('badgeR05').textContent='Ready';}
       if(!state.r01Data.length&&!state.r05Data.length){
         const old=await _db.collection('stock_sessions').doc(id+'_master').get();
         if(old.exists){const s=old.data().session_data;if(s&&s.r01Data?.length){state.r01Data=s.r01Data;document.getElementById('badgeR01').textContent='Ready';}if(s&&s.r05Data?.length){state.r05Data=s.r05Data;document.getElementById('badgeR05').textContent='Ready';}}

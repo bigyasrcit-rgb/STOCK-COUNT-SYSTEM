@@ -128,7 +128,11 @@ state = {
 - กฎราคาต้องครอบทั้ง RESULT row, stock popup, `barcode,qty` และฟังก์ชันแก้จำนวน — **จุดที่ตัดสินใจว่า "แสดงช่อง input หรือไม่" (`renderScanList`, `patchScanRow`) ต้องใช้กฎเดียวกับจุดที่ตรวจ** ไม่งั้นช่องจะโผล่ให้พิมพ์แล้วค่อยเด้งปฏิเสธ; ห้ามนำ threshold จาก `systemQty` กลับมา
 - กฎนี้ไม่ใช้กับ Audit/Recheck และไม่เปลี่ยน `unitMultiplier` ของการสแกน Barcode ปกติ
 - **หลัง deploy ต้องอัปโหลด R05.106 ใหม่หนึ่งครั้ง** เพื่อเติม `unitPrice` ให้ `global_r05` (ไฟล์กลางใช้ร่วมทุกสาขา อัปครั้งเดียวจบ) — ก่อนอัป ทุกบาร์โค้ดจะไม่มีราคา = สแกนทีละชิ้นทั้งระบบ (fail-safe โดยตั้งใจ)
-- `global_r05` แบกราคาต่อบาร์โค้ดเพิ่มและมีเพดาน 1 MiB เหมือน doc อื่น → toast ตอนอัปโหลดโชว์ขนาดจริงทุกครั้ง และเตือนเมื่อ ≥ 800 KB
+- **`global_r05` เก็บเป็น array-of-arrays (`format:'r05a1'`) ไม่ใช่ object** — ของจริง 10,619 บาร์โค้ดในรูป object = **1,069 KB ชนเพดาน 1 MiB แล้ว Firestore ปฏิเสธเงียบๆ** (เจอ ก.ค. 2026 ทันทีที่เพิ่มราคา) แล้ว listener ดึง doc เก่ากลับมาทับ state ที่เพิ่งอัป ผู้ใช้เห็นแค่ "R05.106 อัปเดตจากเครื่องอื่น" โดยไม่รู้ว่าไฟล์หาย
+  - เขียนด้วย `_serializeR05()` อ่านด้วย `_parseR05Json()` เสมอ — **ห้ามใช้ `JSON.stringify(state.r05Data)`/`JSON.parse` ตรงๆ กับ R05 อีก** และ `_lastAppliedR05Json` ต้องเป็นสตริงรูปแบบเดียวกับที่เขียนขึ้น cloud ไม่งั้น echo guard ของ listener พัง (เด้ง "อัปเดตจากเครื่องอื่น" ทุกครั้งแล้วทับตัวเอง)
+  - `_parseR05Json()` ยังอ่านรูปแบบ object เดิมได้ **ห้ามถอด fallback จนกว่าทุกสาขาจะอัป R05 ใหม่**
+  - รูปแบบใหม่ ~520 KB ที่ 10,619 บาร์โค้ด (เหลือที่ ~2 เท่า) ถ้าโตเกินนี้ต้องแตก chunk แบบ WH R16
+- toast ตอนอัปโหลดโชว์ขนาดจริงทุกครั้ง เตือนเมื่อ ≥ 800 KB และ **ถ้าเขียน cloud ไม่ผ่านต้องเด้ง error ให้ผู้ใช้เห็น** (`syncMasterToFirestore` เดิม catch เงียบ)
 
 `_countResetAt` — module-level ISO timestamp, reset epoch (monotonic). ใช้ `>` เปรียบเทียบ lexicographic
 `_r01BaselineAt` — module-level ISO timestamp, อัพ R01 ล่าสุดบน**สาขายา**เท่านั้น (`_isPharmacyBranch()`) — ตัวตัดสิน `_isPreBaselineItem` (freeze audit/pass ที่นับก่อน baseline — audit อยู่รอดข้ามการอัพ R01 ให้เภสัชรีเช็ค) + trigger ล้าง R16 ข้ามเครื่อง ดู [[SKILL-data-files]] R01 Daily Baseline
