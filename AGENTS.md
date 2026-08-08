@@ -55,6 +55,8 @@ pending → scanning → pass
 - สาขายาใช้ Confirm รอบแรกบน Desktop เท่านั้น PDA ที่มี User-Agent `StockCountPDA` ต้องไม่เห็นและเรียก Confirm ไม่ได้
 - สาขายา Audit Verify: เภสัชสแกนรีเช็คบน PDA ได้ แต่การกดยืนยัน (ตัดสิน pass/stock_adjustment) เป็น Desktop-only เช่นกัน
 - ยอดที่เภสัชสแกนรีเช็คต้องเก็บใน `state.scanData[sku].recheckQty/recheckBy/recheckAt` เท่านั้น ห้ามกลับไปใช้ map ใน memory ที่ไม่ sync
+- **`recheckQty` ต้องเทียบกับ `recheckSystemQty` (ยอดระบบที่ freeze ตอนสแกน) เสมอ ห้ามใช้ `si.systemQty` สด** — `si.systemQty` ขยับทุกครั้งที่อัพ R01 ถ้าเทียบข้ามช่วงเวลาจะได้ Stock Adjustment ผิด · ทุกจุดที่ตั้ง `recheckQty` ต้องเรียก `_freezeRecheckBaseline()` และทุกจุดที่ตัดสินต้องใช้ `_recheckBaselineSystemQty()`
+- การย้อนผลที่ยืนยันแล้วกลับเป็น `audit` (ปุ่ม ↺ `reopenPharmacyAudit`) ต้องเขียน marker ที่มี `reopenedAt` ก่อนแก้ local และ `_writePharmacyAuditMarkers` ต้องให้ reopen ชนะ guard "final ชนะ audit เสมอ"
 - WH ใช้ Count/Recheck confirmation workflow แยกกัน ห้ามนำ flow ของสาขายาไปใช้แทน
 - WH supervisor ไม่รีเช็คเอง: ป็อปอัพ Audit Verify เป็น read-only (`_isWhSupervisorAuditReadonly()`) ยืนยันได้อย่างเดียวและต้องผ่าน transaction เสมอ
 
@@ -175,6 +177,7 @@ R01/R16 master
 | `4ff5a12` | PDA แบตไหล, R01 upload status ข้ามเครื่องไม่ชัด | ห้ามนำ bright wake lock กลับมา; R01 ต้องแสดงข้อมูลอัปโหลดล่าสุด |
 | `30c57ca` | Pharmacy PDA Confirm หลายร้อยรายการค้าง/กดซ้ำได้ | Confirm ต้อง Desktop-only, batch processing และ branch lock ต้องคงอยู่ |
 | (ก.ค. 2026) | เภสัชสแกนรีเช็คแล้วยอดค้างใน memory (`_avMap`) ไปไม่ถึง Desktop และ pending map ดึง `countedQty` รอบแรกจาก `scanListMap` | ยอดรีเช็คต้องอยู่ใน `sd.recheckQty` เท่านั้น, pending map ต้องอ่านจาก `state.scanData` ไม่ใช่ `scanListMap`, Audit Verify Confirm ต้อง Desktop-only + branch lock |
+| (ก.ค. 2026) | SKU 200379 (SSS) ของครบแต่ขึ้น Stock Adj: เภสัชสแกนรีเช็คได้ 1 ตอนระบบ 1 → รับเข้า 1 ขวด → อัพ R01 วันถัดไป (ระบบ 2) → กดยืนยันแล้วเทียบ 1 กับ `si.systemQty` สด = 2 | ต้อง freeze `recheckSystemQty` ตอนสแกนแล้วใช้ตัดสินเสมอ, ชดเชย R16 ตาม `recheckAt` ไม่ใช่เวลานับรอบแรก, และต้องมีทางย้อน `stock_adjustment` กลับเป็น `audit` ให้ผู้ใช้แก้เอง |
 | (ก.ค. 2026) | สาขายา Desktop/PDA คนละเครื่องเห็น SKU เดียวกันเป็น Audit/Pass ไม่ตรงกัน และ Audit อาจหายจาก session | Pharmacy Audit marker ต้องเป็น source of truth, listener ต้อง overlay หลัง session ทุกครั้ง, marker-backed SKU ที่หายต้องซ่อมกลับ session และ rollout migration อ่าน Audit Log ตาม epoch |
 
 | (ก.ค. 2026) | session blob ชนเพดาน 1 MiB ของ Firestore เมื่อนับครบทั้งสาขา (~1.6 MB) แล้ว `ref.set()` throw โดยโชว์แค่ `'Sync Error'` — ข้อมูลนับหายเงียบ | `scanData` ต้องอยู่ใน `{branch}/items/{sku}` (schema v2); `_reportSyncError()` ต้องรายงานกรณีเกินขนาดให้ชัดแทน throw เงียบ; ห้าม dual-write blob+items |

@@ -250,6 +250,23 @@ if (scanListMap.size > prevSize) {
   1. `reEvaluateAuditItems` — `continue` (freeze: audit เก่าไม่ flip ตอนอัพ R16 วันใหม่, **pass เก่าที่ไม่มี auditor คง pass ถาวร** — behavior change ที่จงใจ กัน audit ผี pollute คิวเภสัชทุกเย็น)
   2. `getPharmacistAuditEffectiveQty` — คืน `effectiveQty=rawQty` ตรงๆ (sold/inbound/r16103 = 0) — R01 ใหม่รวมยอดขายเก่าแล้ว + กัน `getSoldQtyBefore` fallback คืนยอดรวมบนเครื่องที่ไม่มี rawMap
 
+## Recheck baseline freeze (สาขายา, ก.ค. 2026)
+
+⚠️ **กฎเหล็ก: `recheckQty` ต้องเทียบกับ `systemQty` ที่ freeze ไว้ตอนสแกนเสมอ — ห้ามใช้ `si.systemQty` สด**
+
+`recheckQty` = การนับ ณ จุดเวลาหนึ่ง แต่ `si.systemQty` ขยับทุกครั้งที่อัพ R01 → ถ้ามีของเข้า/ขายคั่นระหว่าง "สแกนรีเช็ค" กับ "กดยืนยัน" จะเทียบข้ามช่วงเวลา = Stock Adjustment ผิด
+
+- `_freezeRecheckBaseline(sku,sd)` — เขียน `recheckSystemQty` + `recheckR01Version` **ทุกจุดที่ตั้ง `recheckQty`**: `_addRecheckScanQty` (สแกน) และ `updatePharmacyRecheckQty` (แก้มือ) · เพิ่ม path ใหม่ที่ตั้ง recheckQty ต้องเรียกด้วย
+- `_recheckBaselineSystemQty(sku,sd)` — ตัวอ่านเดียวที่ใช้ตัดสิน ใช้ใน `confirmAuditVerifyItem` + `_pharmacyAuditMarkerFromFinal` (ทั้งสองต้องได้ผลตรงกันเป๊ะ ไม่งั้น marker กับ local ขัดกัน) · fallback = `si.systemQty` สำหรับรายการเก่าก่อน deploy
+- ชดเชย R16 ใช้ `sd.recheckAt||sd.timestamp` (เวลา**รีเช็ค** ไม่ใช่เวลานับรอบแรก)
+- **marker ต้องพา `recheckSystemQty` ทุก branch** ใน `_applyPharmacyAuditMarkersToState` + builder ทุกตัว — ถ้าหลุด ยืนยันรอบถัดไป fallback ไปใช้ค่าสดแล้วเพี้ยนซ้ำ
+- persist ฟรีทั้ง v1/v2 (`SCAN_ITEM_LOCAL_FIELDS`=`['retries','scans','manualEditAt']` เท่านั้นที่ถูก strip)
+
+**ปุ่ม ↺ เปิดรีเช็คใหม่ (`reopenPharmacyAudit`)** — เภสัช + Desktop (`!_isPdaApp()`) + ออนไลน์ เท่านั้น: ย้อน `pass`/`stock_adjustment` กลับเป็น `audit` ล้างยอดรีเช็คให้สแกนใหม่
+- ต้องเขียน marker **ก่อน** แก้ local (authoritative)
+- marker พก `reopenedAt` → `_writePharmacyAuditMarkers` มี override ให้ชนะ guard "final ชนะ audit เสมอ" (ไม่งั้นปุ่มไม่ทำงาน snapshot ดึงผลเดิมกลับ) + กัน final ที่มาช้ากว่า reopen ทับ
+- `keepDraft` ใน `_applyPharmacyAuditMarkersToState` ต้องข้ามเมื่อ `marker.reopenedAt` ไม่งั้นยอดรีเช็คเดิมเด้งกลับ
+
 **อัพ R01 (สาขายา) ทำอะไร:** `_clearR16ForNewBaseline()` (ล้าง R16 maps + `r16Loaded=false` + ล็อค Confirm) + `syncR16MetaToFirestore()` · เครื่องอื่นล้าง R16 ตามผ่าน `_applyR01BaselineUpdate` (จุด adopt R16 จาก session doc gate `s.r16Loaded===true` — ล้างเองไม่ได้ ต้องพ่วง baseline adoption) · `syncToFirestore` serialize `r16Obj/r16InbObj/r16_103Obj` **หลัง** merge/baseline adoption (ห้ามย้ายกลับขึ้นก่อน fetch — laggard จะพา maps เก่าขึ้น cloud)
 
 **ซาก stale machinery (neutered, ห้ามลบ call sites):** `_isStaleAuditVsBaseline` คืน `false` เสมอ → `scrubStaleLocalAudits` = no-op · call sites 5 จุด (`_applyCloudScanData`, `syncToFirestore` scrub block, `restoreFromFirestore` ×2, `initAfterLogin`) คงไว้เพราะฝังใน merge loop ที่ order-sensitive — inert แต่ revert ง่าย (แก้ 1 บรรทัด)
@@ -344,6 +361,11 @@ Fix: patch-first logic (ดู drainQueue section)
 `resetUnverifiedAuditForNewR01` + stale-scrub ออกแบบเป็น "อัพ R01 = ล้าง audit บังคับนับใหม่" แต่ flow งานจริงคือ "อัพ R01 → เภสัชรีเช็ค audit เมื่อวาน" — audit ที่หมดอายุตั้งแต่อัพ R01 เช้าวันก่อน ค้างบน PDA ที่ไม่ sync จนตัว trigger `visibilitychange→syncToFirestore` (เพิ่ง deploy) บังคับ scrub ตอนเช้า → หายพร้อมกัน 500+ ทุกเครื่อง
 - **บทเรียน 1:** logic scrub/reset ใน payload ของ `syncToFirestore` จะระเบิดพร้อมกันทั้ง fleet ตอนเช้าหลัง deploy trigger ใหม่ (ทุกเครื่อง resume ไล่เลี่ยกัน) — เพิ่ม trigger sync ใหม่ต้องนึกถึง scrub ทุกตัวที่พ่วงมาด้วย
 - **บทเรียน 2:** ก่อนเขียน logic "ล้างข้อมูลอัตโนมัติ" ต้องยืนยัน workflow จริงของหน้างานก่อน — แก้แล้ว (July 2026): audit อยู่รอดข้าม baseline, stale-scrub neutered
+
+**เคส SKU 200379 (SSS, 13 ก.ค. 2026) — "ของครบแต่ขึ้น DIFF":**
+เภสัชสแกนรีเช็คเมื่อวานได้ 1 (ระบบ 1 ตอนนั้น = ถูกต้อง) → รับเข้า 1 ขวดหลังรีเช็ค → วันนี้อัพ R01 (ระบบเป็น 2) → กดยืนยัน → `confirmAuditVerifyItem` หยิบ `si.systemQty` **สด** = 2 มาเทียบกับ 1 → Stock Adjustment ผิด ทั้งที่ของครบ 2
+- **บทเรียน:** ตัวเลขที่ผู้ใช้ "นับ" กับตัวเลขที่ระบบ "เทียบ" ต้องเป็นของเวลาเดียวกันเสมอ — ทุกครั้งที่เก็บผลการนับต้อง freeze baseline คู่ไปด้วย (แก้แล้วด้วย `recheckSystemQty`)
+- **บทเรียนซ้อน:** ไม่มีทางย้อน `stock_adjustment` กลับเป็น `audit` เลย ผู้ใช้แก้เองไม่ได้ต้องรอ dev — feature ที่ "ยืนยันแล้วจบ" ควรมีทางถอยตั้งแต่แรก (แก้แล้วด้วยปุ่ม ↺)
 
 **`getSoldQtyBefore` fallback ไม่กรองเวลา (กับดักข้ามเครื่อง):**
 `if(!state.r16RawMap.size||!scanTimestamp)return state.r16SalesMap.get(sku)||0;` — เครื่องที่**รับ R16 ผ่าน cloud sync ไม่มี rawMap** (sync เฉพาะ salesMap/inboundMap) → fallback คืน**ยอดรวมทั้งก้อนไม่กรอง TRANDATE** ขณะที่เครื่องอัพไฟล์เองกรองตาม timestamp ได้ → การคำนวณ effectiveQty **ให้ผลต่างกันตามเครื่อง** สำหรับ item timestamp เก่า (เจอตอนออกแบบ recheck ข้าม baseline — กันด้วย `_isPreBaselineItem` guard ใน `getPharmacistAuditEffectiveQty`) — logic ใหม่ที่พึ่ง `getSoldQtyBefore/getInboundQtyBefore/getR16103QtyBefore` ต้องเช็คเคสเครื่องไม่มี rawMap เสมอ
