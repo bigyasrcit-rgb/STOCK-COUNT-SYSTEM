@@ -5279,7 +5279,7 @@ function renderPopupTable(){
     const actionCell=canNoStock&&!r.isUnknown&&sd.status==='pending'&&(info.systemQty||0)>0
       ?`<td style="text-align:center;"><button onclick="showNoStockModal('${sku}')" title="ไม่มีของจริง — บันทึกนับ 0" style="border:1px solid rgba(230,70,70,0.4);background:rgba(230,70,70,0.08);color:var(--red);padding:4px 10px;border-radius:8px;font-size:0.72rem;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;">🚫 นับ 0</button></td>`
       :'<td style="text-align:center;color:var(--text3);">—</td>';
-    return`<tr><td style="color:var(--text3);font-size:0.75rem">${i+1}</td><td class="ptd-sku">${sku}${ut}${dt}${pt}</td><td class="ptd-bc" title="${barcodes}">${bcs}</td><td class="ptd-name">${info.productName}</td>${sysQtyCell}<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center">${qtyCell}</td><td style="text-align:center;">${scannedByCell}</td><td>${sp}</td><td>${ap}</td><td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3)">${sd.timestamp||'—'}</td>${locCell}${actionCell}</tr>`;
+    return`<tr><td style="color:var(--text3);font-size:0.75rem">${i+1}</td><td class="ptd-sku">${sku}${ut}${dt}${pt}</td><td class="ptd-bc" title="${barcodes}">${bcs}</td><td class="ptd-name">${info.productName}</td>${sysQtyCell}<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center">${qtyCell}</td><td style="text-align:center;">${scannedByCell}</td><td>${sp}</td><td>${ap}</td><td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3)">${sd.firstScanAt||sd.timestamp||'—'}</td>${locCell}${actionCell}</tr>`;
   }).join('');
 }
 
@@ -5590,6 +5590,8 @@ function saveAuditLogToFirestore(){
       countedQty:sd.countedQty,
       scannedBy:sd.scannedBy||'',
       timestamp:sd.timestamp||'',
+      firstScanAt:sd.firstScanAt||sd.timestamp||'', // เวลาสแกนจริง — timestamp ถูกทับด้วยเวลายืนยัน ใช้อ้างอิงเวลานับไม่ได้
+
       status:sd.status,
       auditor:sd.auditor||'',
       recheckQty:sd.recheckQty!==undefined?sd.recheckQty:null
@@ -6557,7 +6559,7 @@ function renderAuditVerifyTable(){
   // ↺ เปิดรีเช็คใหม่: เภสัช Desktop เท่านั้น (กฎเดียวกับการยืนยัน Audit)
   const canReopen=_isPharmacyBranch()&&currentRole==='pharmacist'&&!_isPdaApp();
   if(_avFilter==='stock_adj'){
-    if(thead)thead.innerHTML='<tr><th>#</th><th>SKU</th><th>Barcode</th><th>Product Name</th><th style="text-align:center;">Sys Qty</th><th style="text-align:center;">Recheck Qty</th><th style="text-align:center;">Diff</th><th>เวลาที่เช็คล่าสุด</th>'+(canReopen?'<th style="text-align:center;">แก้ไข</th>':'')+'</tr>';
+    if(thead)thead.innerHTML='<tr><th>#</th><th>SKU</th><th>Barcode</th><th>Product Name</th><th style="text-align:center;">Sys Qty</th><th style="text-align:center;">Recheck Qty</th><th style="text-align:center;">Diff</th><th>เวลานับ</th>'+(canReopen?'<th style="text-align:center;">แก้ไข</th>':'')+'</tr>';
     const rows=[];
     for(const[sku,sd] of state.scanData.entries()){if(sd.status!=='stock_adjustment')continue;const si=state.skuMap.get(sku);if(!si)continue;rows.push({sku,sd,si});}
     if(rc)rc.textContent=rows.length+' รายการ Stock Adj';
@@ -6587,7 +6589,7 @@ function renderAuditVerifyTable(){
         +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;font-weight:700;color:var(--text2);">${sysCell}</td>`
         +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;font-weight:700;">${recheckVal}</td>`
         +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;">${diffCell}</td>`
-        +`<td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3);">${sd.timestamp||'—'}</td>`
+        +`<td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3);">${sd.firstScanAt||sd.timestamp||'—'}</td>`
         +(canReopen?`<td style="text-align:center;"><button onclick="reopenPharmacyAudit('${sku}')" title="เปิดกลับไปสแกนรีเช็คใหม่" style="border:1px solid rgba(0,114,198,0.4);background:rgba(0,114,198,0.08);color:var(--accent);padding:4px 10px;border-radius:8px;font-size:0.72rem;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;">↺ สแกนใหม่</button></td>`:'')
         +`</tr>`;
     }).join('');
@@ -6595,7 +6597,7 @@ function renderAuditVerifyTable(){
     const isPda=window.innerWidth<=600;
     if(thead)thead.innerHTML=isPda
       ?'<tr><th>SKU</th><th>Name</th><th style="text-align:center;">Recheck</th></tr>'
-      :'<tr><th>#</th><th>SKU</th><th>Barcode</th><th>Product Name</th><th style="text-align:center;">Count Qty</th><th style="text-align:center;">Recheck</th><th>เวลาที่เช็คล่าสุด</th></tr>';
+      :'<tr><th>#</th><th>SKU</th><th>Barcode</th><th>Product Name</th><th style="text-align:center;">Count Qty</th><th style="text-align:center;">Recheck</th><th>เวลานับ</th></tr>';
     const rows=[];
     for(const[sku,sd] of state.scanData.entries()){if(sd.status!=='audit')continue;const si=state.skuMap.get(sku);if(!si)continue;rows.push({sku,sd,si});}
     if(rc)rc.textContent=rows.length+' รายการ '+_auditTerm();
@@ -6627,7 +6629,7 @@ function renderAuditVerifyTable(){
         +`<td class="ptd-name">${si.productName}</td>`
         +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;font-weight:700;color:var(--text2);">${sd.countedQty}</td>`
         +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;">${qtyCell}</td>`
-        +`<td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3);">${sd.timestamp||'—'}</td>`
+        +`<td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3);">${sd.firstScanAt||sd.timestamp||'—'}</td>`
         +`</tr>`;
     }).join('');
   }
@@ -7497,7 +7499,7 @@ function renderHistoryStatsTable(){
       if(sd.initialStatus!=='audit')continue;
       const si=state.skuMap.get(sku);if(!si)continue;
       if(_hsAssistantSel&&sd.scannedBy!==_hsAssistantSel)continue;
-      localItems.push({sku,productName:si.productName,barcode:(si.barcodes[0]||{}).barcode||sd.barcode||'—',countedQty:sd.countedQty,status:sd.status,timestamp:sd.timestamp||'—',scannedBy:sd.scannedBy||'—'});
+      localItems.push({sku,productName:si.productName,barcode:(si.barcodes[0]||{}).barcode||sd.barcode||'—',countedQty:sd.countedQty,status:sd.status,timestamp:sd.firstScanAt||sd.timestamp||'—',scannedBy:sd.scannedBy||'—'});
     }
 
     if(localItems.length){
@@ -7550,7 +7552,7 @@ function renderHistoryStatsTable(){
         ${isWhP?`<td style="text-align:center;font-size:0.75rem;color:var(--text2);">${loc}</td>`:''}
         <td style="text-align:center;font-weight:700;">${sd.recheckQty!==undefined?sd.recheckQty:sd.countedQty}</td>
         <td style="text-align:center;">${st}</td>
-        <td style="font-size:0.7rem;color:var(--text3);">${sd.timestamp||'—'}</td>
+        <td style="font-size:0.7rem;color:var(--text3);">${sd.firstScanAt||sd.timestamp||'—'}</td>
         <td style="font-weight:600;color:var(--text2);">${(isWhP?sd.recheckBy:sd.auditor)||'—'}</td>
       </tr>`;
     }).join('');
@@ -7798,7 +7800,8 @@ function exportHsCountExcel(){
     const staff=isAssistant
       ?(sd?.scannedBy||fsItem?.scannedBy||'')
       :(currentBranch==='WH'?(sd?.recheckBy||fsItem?.recheckBy||''):(sd?.auditor||fsItem?.auditor||''));
-    const ts=sd?.timestamp||fsItem?.timestamp||''; // เวลาที่พนักงานสแกน/นับ
+    // เวลาที่พนักงานสแกน/นับ — firstScanAt ก่อนเสมอ (sd.timestamp ถูกทับด้วยเวลายืนยันตอนเภสัช/หัวหน้า verify)
+    const ts=sd?.firstScanAt||sd?.timestamp||fsItem?.firstScanAt||fsItem?.timestamp||'';
     rows.push([location,sku,barcode,name,unitName,cnt,sysQty,diff,staff,_fmtDateDMY(ts)]);
   });
   if(rows.length===1){toast('ไม่มีรายการที่ Diff ≠ 0 ให้ Export','warn');return;}
@@ -7828,7 +7831,7 @@ function exportStockAdjExcel(){
     const diff=rv-sysQty; // ColG - ColF
     if(diff===0)continue;
     const loc=state.locationMap.get(sku)||'';
-    rows.push([loc,sku,bc,si.productName,unitName,sysQty,rv,diff,sd.scannedBy||'',_fmtDateDMY(sd.timestamp)]);
+    rows.push([loc,sku,bc,si.productName,unitName,sysQty,rv,diff,sd.scannedBy||'',_fmtDateDMY(sd.firstScanAt||sd.timestamp)]);
   }
   if(rows.length===1){toast('ไม่มีข้อมูล Stock Adjustment','warn');return;}
   const ws=XLSX.utils.aoa_to_sheet(rows);

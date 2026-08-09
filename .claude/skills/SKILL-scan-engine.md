@@ -250,6 +250,21 @@ if (scanListMap.size > prevSize) {
   1. `reEvaluateAuditItems` — `continue` (freeze: audit เก่าไม่ flip ตอนอัพ R16 วันใหม่, **pass เก่าที่ไม่มี auditor คง pass ถาวร** — behavior change ที่จงใจ กัน audit ผี pollute คิวเภสัชทุกเย็น)
   2. `getPharmacistAuditEffectiveQty` — คืน `effectiveQty=rawQty` ตรงๆ (sold/inbound/r16103 = 0) — R01 ใหม่รวมยอดขายเก่าแล้ว + กัน `getSoldQtyBefore` fallback คืนยอดรวมบนเครื่องที่ไม่มี rawMap
 
+## timestamp vs firstScanAt — ห้ามสลับกัน (ส.ค. 2026)
+
+`sd.timestamp` = **เวลาล่าสุดของสถานะ ไม่ใช่เวลาสแกน** — ถูกเขียนทับด้วยเวลายืนยันใน `confirmAuditVerifyItem`
+`sd.firstScanAt` = เวลาสแกนครั้งแรกจริง เขียนครั้งเดียว ไม่เคยถูกทับ (`if(!sd.firstScanAt)sd.firstScanAt=now`)
+
+| ใช้ที่ไหน | ต้องใช้ field ไหน |
+|---|---|
+| **แสดงผล / Export ทุกจุด** | `sd.firstScanAt||sd.timestamp` เสมอ |
+| **จุดคำนวณ — ห้ามเปลี่ยน** | `sd.timestamp` เท่านั้น |
+
+จุดคำนวณที่ห้ามแตะ: ช่วงชดเชย R16 (`getSoldQtyBefore`/`getInboundQtyBefore`/`getR16103QtyBefore` ใน `reEvaluateAuditItems`, `evaluatePendingScans`, batched confirm), day-rollover (`resetStaleScanningItems`), เช็ควันที่ R16, day guard ของ schema v2 sync, `_isPreBaselineItem`
+— ทั้งหมดรันก่อน `timestamp` ถูกทับ ผลจึงถูกอยู่แล้ว การสลับเป็น `firstScanAt` จะเปลี่ยนสูตร/พัง sync
+
+`saveAuditLogToFirestore` เก็บทั้งสอง field (`timestamp` + `firstScanAt`) เพื่อให้ Export ที่ fallback ไปอ่าน Audit Log ได้เวลาสแกนจริง · ข้อมูลเก่าไม่มี `firstScanAt` → fallback `||timestamp` ทุกจุด
+
 ## Recheck baseline freeze (สาขายา, ก.ค. 2026)
 
 ⚠️ **กฎเหล็ก: `recheckQty` ต้องเทียบกับ `systemQty` ที่ freeze ไว้ตอนสแกนเสมอ — ห้ามใช้ `si.systemQty` สด**
