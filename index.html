@@ -2822,6 +2822,36 @@ function loadR16(event) {
         }
       }
     }
+    // ช่วงเวลาที่ไฟล์ R16 ครอบ + เตือนถ้าครอบไม่ถึงเวลานับล่าสุด
+    // เคส ส.ค. 2026: R16 export ถึง 13:26 แต่ขาย 15:22 นับ 15:46 → soldQty=0 → Audit เกินจริงทั้งรอบ
+    // ตัวเช็ค "วันที่" ด้านบนจับไม่ได้เพราะวันตรงกัน ต่างกันแค่เวลา — ต้องเทียบระดับเวลาแยกต่างหาก
+    if(matched>0){
+      let minTd=null,maxTd=null;
+      state.r16Data.forEach(row=>{if(!row.tranDate)return;const d=parseTranDate(row.tranDate);if(!d)return;if(!minTd||d<minTd)minTd=d;if(!maxTd||d>maxTd)maxTd=d;});
+      const _fmtTd=d=>`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      // ต่อท้ายเวลาอัพโหลดบนการ์ด — ให้คนอัพเห็นทันทีว่าไฟล์ครอบช่วงไหน (หายเมื่อ _setR16Ts ถูกเรียกใหม่ = ตั้งใจ)
+      if(minTd&&maxTd){const _tsEl=document.getElementById('r16Timestamp');if(_tsEl&&_tsEl.textContent)_tsEl.textContent+=` · ข้อมูล ${_fmtTd(minTd)}–${_fmtTd(maxTd)}`;}
+      // ข้ามถ้าตัวเช็ควันที่เตือนไปแล้ว (เคสหยาบกว่า) — ไม่ทับข้อความกัน
+      if(maxTd&&state.scanData.size&&!state.r16DateMismatch){
+        let lateN=0,lastScan=null;
+        for(const[,sd] of state.scanData.entries()){
+          if(sd.status==='pending')continue;
+          const ts=sd.firstScanAt||sd.timestamp;if(!ts)continue;
+          const t=new Date(String(ts).replace(' ','T'));if(isNaN(t))continue;
+          if(!lastScan||t>lastScan)lastScan=t;
+          if(t>maxTd)lateN++;
+        }
+        if(lateN>0){
+          state.r16DateMismatch=true;
+          const _bd=document.getElementById('badgeR16');
+          _bd.textContent='⚠️ ตรวจสอบวันที่';
+          _bd.parentElement.classList.add('upload-file-badge-warn');
+          const _det=document.getElementById('r16MismatchDetail');
+          if(_det)_det.textContent=`R16 มีข้อมูลถึง: ${_fmtTd(maxTd)}\nนับล่าสุด: ${_fmtTd(lastScan)}\nรายการที่นับหลังช่วงข้อมูล: ${lateN} รายการ`;
+          setTimeout(()=>toast(`⚠️ R16 มีข้อมูลถึง ${_fmtTd(maxTd)} แต่มีสินค้าที่นับหลังจากนั้น ${lateN} รายการ — ยอดขายช่วงหลังจะไม่ถูกบวกกลับ ทำให้ Audit ขึ้นเกินจริง กรุณา export R16 ใหม่ให้ครอบถึงเวลานับล่าสุด`,'warn',9000),700);
+        }
+      }
+    }
     // re-evaluate item ที่เป็น audit เผื่อ R16 เปลี่ยน
     if(matched>0) await reEvaluateAuditItems();
     if(currentBranch==='WH'){
