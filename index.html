@@ -695,7 +695,7 @@
     <div style="background:rgba(224,140,0,0.07);border:1px solid rgba(224,140,0,0.3);border-radius:8px;padding:9px 12px;margin-bottom:10px;">
       <strong style="color:var(--orange);display:block;margin-bottom:4px;">⚠️ กฎพิเศษ</strong>
       <ul style="padding-left:16px;margin:0;font-size:0.8rem;line-height:1.7;">
-        <li id="guideQtyRule">ราคา ProductMaster คอลัมน์ J &lt; 1,000 บาท → แก้ Qty ได้ · ตั้งแต่ 1,000 บาทหรือไม่มีราคา → สแกนทีละชิ้น</li>
+        <li id="guideQtyRule">ราคาบาร์โค้ด (R05.106 คอลัมน์ B) &lt; 1,000 บาท → แก้ Qty ได้ · ตั้งแต่ 1,000 บาทหรือไม่มีราคา → สแกนทีละชิ้น</li>
         <li>สินค้า <strong id="guideRulePill">Pass / Audit / Stock Adj</strong> แล้ว → สแกนซ้ำไม่เปลี่ยนจำนวน</li>
       </ul>
     </div>
@@ -5128,7 +5128,7 @@ function applyAuditTerminology(){
     ?'รายการ <strong style="color:var(--yellow);">⚠️ Recheck</strong> → <strong>warehouse</strong> สแกนรีเช็คที่ช่อง scan หลัก → <strong>หัวหน้างาน</strong>กด <strong>✓ ยืนยันรีเช็ค</strong> บน Desktop'
     :'รายการ <strong style="color:var(--yellow);">⚠️ Audit</strong> → เภสัชเปิด <strong>Audit Verify</strong> → สแกนนับซ้ำ → กด <strong>ยืนยันทั้งหมด</strong>');
   set('guideRulePill',isWh?'Pass / Recheck / Stock Adj':'Pass / Audit / Stock Adj');
-  setHtml('guideQtyRule','ราคา ProductMaster คอลัมน์ J &lt; 1,000 บาท → แก้ Qty ได้ · ตั้งแต่ 1,000 บาทหรือไม่มีราคา → สแกนทีละชิ้น');
+  setHtml('guideQtyRule','ราคาบาร์โค้ด (R05.106 คอลัมน์ B) &lt; 1,000 บาท → แก้ Qty ได้ · ตั้งแต่ 1,000 บาทหรือไม่มีราคา → สแกนทีละชิ้น');
   set('guideAuditPill',isWh?'⚠️ Recheck':'⚠️ Audit');
   set('guideAuditDesc',isWh?'จำนวนไม่ตรง — รอ warehouse รีเช็ค + หัวหน้างานยืนยันรีเช็ค':'จำนวนไม่ตรง — รอเภสัชตรวจซ้ำใน Audit Verify');
 }
