@@ -5398,7 +5398,15 @@ function closeGuideModal(){document.getElementById('guidePopover').style.display
 function openScanGuide(){
   const btn=document.getElementById('scanGuideBtn');
   const pop=document.getElementById('scanGuidePopover');
-  if(btn){const r=btn.getBoundingClientRect();pop.style.top=(r.bottom+10)+'px';pop.style.left='auto';pop.style.right='16px';} // เกาะตำแหน่งจริงของปุ่ม "?" แทน top:120px เดิม (เคยห่างเพราะ hardcode ไม่ตรงตำแหน่งจริงที่ขยับตามเนื้อหาแต่ละสาขา/role) — ต้องตั้ง left:auto ด้วย ไม่งั้น left:calc(100%+20px) จาก class เดิมจะ override right นี้
+  if(btn){
+    const r=btn.getBoundingClientRect();
+    // เกาะตำแหน่งจริงของปุ่มทั้งแนวตั้ง+แนวนอน — เดิม left ล็อกที่ right:16px (ชิดขวาจอเสมอ)
+    // ทำให้ห่างจากปุ่มมากเมื่อปุ่มอยู่ซีกซ้ายของ layout (เช่น panel SCAN) — clamp กันล้นขอบจอทั้งสองด้าน
+    const popW=pop.offsetWidth||460; // ตรงกับ .upload-guide-popover width
+    let left=Math.min(r.left,window.innerWidth-popW-16);
+    left=Math.max(left,16);
+    pop.style.top=(r.bottom+10)+'px';pop.style.left=left+'px';pop.style.right='auto';
+  }
   pop.style.display='block';
 }
 function closeScanGuide(){document.getElementById('scanGuidePopover').style.display='none';}
