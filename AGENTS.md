@@ -194,6 +194,8 @@ R01/R16 master
 | (ก.ค. 2026) | session blob ชนเพดาน 1 MiB ของ Firestore เมื่อนับครบทั้งสาขา (~1.6 MB) แล้ว `ref.set()` throw โดยโชว์แค่ `'Sync Error'` — ข้อมูลนับหายเงียบ | `scanData` ต้องอยู่ใน `{branch}/items/{sku}` (schema v2); `_reportSyncError()` ต้องรายงานกรณีเกินขนาดให้ชัดแทน throw เงียบ; ห้าม dual-write blob+items |
 | (ส.ค. 2026) | `WH_count_confirmations` เก็บ SKU เป็น dynamic map จนชนเพดาน 40,000 index entries ที่ 873 markers ทำให้ Supervisor Confirm ต่อไม่ได้ ทั้งที่ document ยังไม่ถึง 1 MiB | ห้ามเพิ่ม final ลง legacy map; ใช้ `WH/confirm_ops/{opId}/results/{sku}` และ atomic committed pointer, เก็บ legacy read-only ระหว่าง migration และ roll-forward หลังมี post-cutover commit |
 
+สถานะปัจจุบันของการแก้ WH: โค้ดรุ่นใหม่ถูก commit/push แล้ว และเขียนผลยืนยันใหม่ผ่าน `WH/confirm_ops/{opId}/results/{sku}` เท่านั้น จึงไม่ควรชนเพดาน dynamic-map เดิมซ้ำในรอบถัดไป เมื่อแก้หรือ deploy ที่เกี่ยวข้อง ต้อง Publish `firestore.rules` ก่อน/พร้อม deploy เว็บ และบังคับให้ Supervisor กับ PDA ทุกเครื่องโหลดรุ่นใหม่ หาก Confirm ยังล้มเหลว ให้ตรวจ Rules/runtime version, R01/R16 readiness/version, confirm lock, network และ quota; ห้ามลบ legacy markers หรือเริ่มรอบใหม่เพื่อแก้เฉพาะหน้า
+
 Schema v2 — invariant ที่ห้ามทำให้ย้อนกลับ (รายละเอียดเต็ม + งานที่ยังค้างอยู่ที่ `CLAUDE.md` §Scan data schema v2):
 
 - **SRC และ WH cutover เป็น v2 แล้ว (24 ก.ค. 2026)** ผ่าน `migrateSessionToSchemaV2()` ระหว่างรอบนับ · KKL/SSS ยังเป็น v1
