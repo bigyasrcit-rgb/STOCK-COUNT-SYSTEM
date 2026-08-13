@@ -104,4 +104,54 @@ async function armR16(page, { version = 'R16-TEST-1' } = {}) {
   }, version);
 }
 
-module.exports = { bootFreshCount, bootJoinCount, armR16, PROJECT_ID, MIN_SKUS };
+// Arm the WH raw-timeline/version gate without uploading a CSV. WH Confirm checks both the
+// in-page raw timeline flags and the dedicated Cloud meta document, unlike pharmacy branches
+// which keep the R16 version on {branch}_r01. Empty timelines are intentional here: individual
+// specs seed counted/system quantities so the R16 adjustment is zero unless a spec says otherwise.
+async function armWhR16(page, { version = 'R16-WH-TEST-1' } = {}) {
+  await page.evaluate(async (v) => {
+    if (currentBranch !== 'WH') throw new Error('armWhR16 requires branch WH');
+    state.r16Data = [];
+    state.r16SalesMap.clear(); state.r16RawMap.clear();
+    state.r16InboundMap.clear(); state.r16InboundRawMap.clear();
+    state.r16Loaded = true;
+    state.r16DateMismatch = false;
+    state.r16DetailVersion = v;
+    state.r16UploadedAt = 'test-fixture';
+    state.r16_103Map.clear(); state.r16_103RawMap.clear();
+    state.r16_103Loaded = false;
+    state.r16_103DetailVersion = '';
+    state.r16_103UploadedAt = '';
+    _whR16TimelineLoading = false;
+    _whR16TimelineReady = true;
+    _whR16103TimelineReady = false;
+    await getWhR16MetaRef('104').set({
+      ready: true,
+      kind: '104',
+      version: v,
+      generation: 'test-generation-104',
+      chunkCount: 0,
+      rowCount: 0,
+      countResetAt: _countResetAt || '',
+      r01Version: state.r01Version || '',
+      uploadedAtText: 'test-fixture',
+      dateMismatch: false,
+      dateMismatchDetail: '',
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    await getWhR16MetaRef('103').delete().catch(() => {});
+    updateConfirmBtn();
+  }, version);
+  // A boot-time R01 listener can schedule its 250ms Cloud timeline reload just after the fixture
+  // is armed. Drive one authoritative reload after that debounce window so Confirm never races a
+  // still-running fixture load (the production UI correctly blocks while loading).
+  await page.waitForTimeout(300);
+  await page.evaluate(async () => {
+    clearTimeout(_whR16MetaReloadTimer); _whR16MetaReloadTimer = null;
+    await _loadWhR16CloudTimelines();
+  });
+  await page.waitForFunction((v) => !_whR16TimelineLoading && _whR16TimelineReady &&
+    state.r16Loaded && state.r16DetailVersion === v, version, { timeout: 15_000, polling: 50 });
+}
+
+module.exports = { bootFreshCount, bootJoinCount, armR16, armWhR16, PROJECT_ID, MIN_SKUS };

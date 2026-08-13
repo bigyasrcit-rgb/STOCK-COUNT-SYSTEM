@@ -1158,6 +1158,7 @@ let _whCountUnsubscribe = null;
 let _whCountInboxData = {};
 let _whCountConfirmationUnsubscribe = null;
 let _whCountConfirmationData = {};
+let _whLegacyCountConfirmationData = {};
 let _whCountConfirming = false;
 let _whR16TimelineReady = false;
 let _whR16103TimelineReady = false;
@@ -1165,7 +1166,18 @@ let _whRecheckUnsubscribe = null;
 let _whRecheckInboxData = {};
 let _whRecheckConfirmationUnsubscribe = null;
 let _whRecheckConfirmationData = {};
+let _whLegacyRecheckConfirmationData = {};
 let _whRecheckConfirming = false;
+let _whConfirmOpsUnsubscribe = null;
+let _whConfirmOpsListenerEpoch = '';
+let _whConfirmOpsLoadToken = 0;
+let _whConfirmOpsReloadTimer = null;
+let _whConfirmRecoveryTimer = null;
+let _whConfirmRecoveryPromise = null;
+let _whConfirmRecoveryDoneKey = '';
+let _whCountOpConfirmationData = {};
+let _whRecheckOpConfirmationData = {};
+let _whCommittedOps = new Map();
 let _whMasterUnsubscribe = null;
 let _whR16104MetaUnsubscribe = null;
 let _whR16103MetaUnsubscribe = null;
@@ -1200,6 +1212,7 @@ function getWhCountInboxRef(){return _db.collection('stock_sessions').doc('WH_co
 function getWhCountConfirmationRef(){return _db.collection('stock_sessions').doc('WH_count_confirmations');}
 function getWhRecheckInboxRef(){return _db.collection('stock_sessions').doc('WH_rechecks');}
 function getWhRecheckConfirmationRef(){return _db.collection('stock_sessions').doc('WH_recheck_confirmations');}
+function getWhConfirmOpsRef(){return _db.collection('stock_sessions').doc('WH').collection('confirm_ops');}
 function getBranchConfirmLockRef(branch=currentBranch){return _db.collection('stock_sessions').doc(`${branch}_confirm_lock`);}
 function getPharmacyAuditMarkerRef(branch=currentBranch){return _db.collection('stock_sessions').doc(`${branch}_pharmacy_audit_markers`);}
 function getScanItemsRef(branch=currentBranch){return _db.collection('stock_sessions').doc(branch).collection('items');}
@@ -1212,6 +1225,7 @@ function getWhR16MetaRef(kind){return _db.collection('stock_sessions').doc(kind=
 const SCAN_SCHEMA_V2=2;
 const SCAN_ITEM_FLUSH_MS=800;      // debounce การ flush dirty SKU ขึ้น Firestore
 const SCAN_ITEM_BATCH_SIZE=450;    // < 500 ops/writeBatch ของ Firestore เผื่อ margin
+const WH_CONFIRM_RESULT_BATCH_SIZE=400; // results/field deletes ต่อชุด — เผื่อเพดาน 500 writes/transforms
 const SCAN_ITEM_RECONCILE_MS=60000;// safety net: กวาดหา SKU ที่ mutation site ลืม mark
 let _schemaVersion=1;
 // field ที่เป็น runtime-only — ห้ามขึ้น cloud (เหมือนที่ syncToFirestore เดิม strip ทิ้ง)
@@ -1492,13 +1506,14 @@ function stopScanSessionListener(){
   stopScanItemsListener();
 }
 function _isPdaApp(){return navigator.userAgent.includes('StockCountPDA');}
+function _branchUsesConfirmLock(){return _isPharmacyBranch()||currentBranch==='WH';}
 function _branchConfirmLockExpiresMs(data){
   if(!data)return 0;
   if(data.expiresAt?.toMillis)return data.expiresAt.toMillis();
   const ms=Date.parse(data.expiresAt||'');return Number.isFinite(ms)?ms:0;
 }
 function _isBranchConfirmLockActive(data=_branchConfirmLockData){
-  return !!(_isPharmacyBranch()&&data?.token&&(data.countResetAt||'')===(_countResetAt||'')&&_branchConfirmLockExpiresMs(data)>Date.now());
+  return !!(_branchUsesConfirmLock()&&data?.token&&(data.countResetAt||'')===(_countResetAt||'')&&_branchConfirmLockExpiresMs(data)>Date.now());
 }
 function _setBranchScanPaused(active,data=null){
   const wasPaused=_branchScanPaused;_branchScanPaused=!!active;_branchConfirmLockData=data;
@@ -1510,6 +1525,9 @@ function _setBranchScanPaused(active,data=null){
     clearTimeout(_scanDebounceTimer);_scanDebounceTimer=null;_lastKeystrokeTime=0;_pdaMode=false;
     if(scanInput){scanInput.disabled=true;scanInput.classList.remove('pda-receiving');}
     if(auditInput)auditInput.disabled=true;
+    // WH workflow v2: เมื่อรับ lock ให้เร่งส่ง dirty item ที่สแกนเสร็จก่อนหน้า lock ขึ้น Cloud
+    // แล้ว Supervisor จะรอ quiet window ก่อนสร้าง candidate snapshot
+    if(currentBranch==='WH'&&currentRole==='warehouse'&&typeof _dirtySkus!=='undefined'&&_dirtySkus.size)_scheduleScanFlush(0);
     const wait=Math.max(0,_branchConfirmLockExpiresMs(data)-Date.now()+100);
     _branchConfirmLockExpiryTimer=setTimeout(()=>{if(_branchConfirmLockData?.token===data?.token)_setBranchScanPaused(false,null);},wait);
   }else{
@@ -1533,14 +1551,14 @@ function stopBranchConfirmLockListener(){
 }
 function startBranchConfirmLockListener(){
   stopBranchConfirmLockListener();
-  if(!_db||!currentBranch||!_isPharmacyBranch()||_adminMode)return;
+  if(!_db||!currentBranch||!_branchUsesConfirmLock()||_adminMode)return;
   _branchConfirmLockUnsubscribe=getBranchConfirmLockRef().onSnapshot(doc=>{
     const data=doc.exists?(doc.data()||{}):null;
     _setBranchScanPaused(_isBranchConfirmLockActive(data),data);
   },e=>console.warn('[branch confirm lock]',e.message));
 }
 async function _acquireBranchConfirmLock(){
-  if(!_db||!_isPharmacyBranch())throw new Error('BRANCH_CONFIRM_UNAVAILABLE');
+  if(!_db||!_branchUsesConfirmLock())throw new Error('BRANCH_CONFIRM_UNAVAILABLE');
   const token=(crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const ref=getBranchConfirmLockRef();const expiresAt=firebase.firestore.Timestamp.fromMillis(Date.now()+BRANCH_CONFIRM_LOCK_MS);
   const lockData={token,branch:currentBranch,owner:currentUser||'',role:currentRole||'',countResetAt:_countResetAt||'',expiresAt};
@@ -1552,7 +1570,7 @@ async function _acquireBranchConfirmLock(){
   _branchConfirmToken=token;_setBranchScanPaused(true,lockData);return token;
 }
 async function _releaseBranchConfirmLock(token){
-  if(!_db||!token||!_isPharmacyBranch())return false;
+  if(!_db||!token||!_branchUsesConfirmLock())return false;
   const ref=getBranchConfirmLockRef();
   try{await _db.runTransaction(async tx=>{const snap=await tx.get(ref);if(snap.exists&&snap.data()?.token===token)tx.delete(ref);});}
   catch(e){console.warn('[branch confirm unlock]',e.message);return false;}
@@ -1842,13 +1860,236 @@ function startWhMasterListeners(){
   _whR16104MetaUnsubscribe=getWhR16MetaRef('104').onSnapshot(doc=>{const version=doc.exists?(doc.data().version||''):'';if(version!==(state.r16DetailVersion||'')||(!doc.exists&&state.r16Loaded))_scheduleWhR16CloudReload(true);},e=>console.warn('[WH R16.104 meta listener]',e.message));
   _whR16103MetaUnsubscribe=getWhR16MetaRef('103').onSnapshot(doc=>{const version=doc.exists?(doc.data().version||''):'';if(version!==(state.r16_103DetailVersion||'')||(!doc.exists&&state.r16_103Loaded))_scheduleWhR16CloudReload(true);},e=>console.warn('[WH R16.103 meta listener]',e.message));
 }
+function _whStableValue(value){
+  if(Array.isArray(value))return value.map(_whStableValue);
+  if(value&&typeof value==='object'){
+    const out={};for(const key of Object.keys(value).sort(_whCompareText))out[key]=_whStableValue(value[key]);return out;
+  }
+  return value;
+}
+function _whStableJson(value){return JSON.stringify(_whStableValue(value));}
+function _whCompareText(a,b){a=String(a);b=String(b);return a<b?-1:a>b?1:0;}
+function _whSha256Fallback(bytes){
+  // SHA-256 แบบ pure JS สำหรับ WebView ที่ไม่มี SubtleCrypto — ต้องให้ hash ตรงกับ Desktop ทุกเครื่อง
+  const k=[
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const bitLength=bytes.length*8;const paddedLength=Math.ceil((bytes.length+9)/64)*64;
+  const data=new Uint8Array(paddedLength);data.set(bytes);data[bytes.length]=0x80;
+  const view=new DataView(data.buffer);view.setUint32(paddedLength-8,Math.floor(bitLength/0x100000000),false);view.setUint32(paddedLength-4,bitLength>>>0,false);
+  const rotr=(v,n)=>(v>>>n)|(v<<(32-n));const w=new Uint32Array(64);
+  let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+  for(let offset=0;offset<paddedLength;offset+=64){
+    for(let i=0;i<16;i++)w[i]=view.getUint32(offset+i*4,false);
+    for(let i=16;i<64;i++){
+      const s0=rotr(w[i-15],7)^rotr(w[i-15],18)^(w[i-15]>>>3);const s1=rotr(w[i-2],17)^rotr(w[i-2],19)^(w[i-2]>>>10);
+      w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;
+    }
+    let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+    for(let i=0;i<64;i++){
+      const s1=rotr(e,6)^rotr(e,11)^rotr(e,25);const ch=(e&f)^(~e&g);const t1=(h+s1+ch+k[i]+w[i])>>>0;
+      const s0=rotr(a,2)^rotr(a,13)^rotr(a,22);const maj=(a&b)^(a&c)^(b&c);const t2=(s0+maj)>>>0;
+      h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;
+    }
+    h0=(h0+a)>>>0;h1=(h1+b)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;
+    h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+h)>>>0;
+  }
+  return[h0,h1,h2,h3,h4,h5,h6,h7].map(v=>v.toString(16).padStart(8,'0')).join('');
+}
+async function _whWorkflowHashResults(results){
+  const rows=Object.entries(results||{}).sort(([a],[b])=>_whCompareText(a,b)).map(([sku,marker])=>[sku,marker]);
+  const bytes=new TextEncoder().encode(_whStableJson(rows));
+  if(globalThis.crypto?.subtle){
+    const digest=await globalThis.crypto.subtle.digest('SHA-256',bytes);
+    return[...new Uint8Array(digest)].map(v=>v.toString(16).padStart(2,'0')).join('');
+  }
+  return _whSha256Fallback(bytes);
+}
+function _rebuildWhConfirmationData(){
+  _whCountConfirmationData={...(_whLegacyCountConfirmationData||{}),...(_whCountOpConfirmationData||{})};
+  _whRecheckConfirmationData={...(_whLegacyRecheckConfirmationData||{}),...(_whRecheckOpConfirmationData||{})};
+}
+function _renderWhWorkflowStateChanges(countChanged=[],recheckChanged=[]){
+  if(!countChanged.length&&!recheckChanged.length)return;
+  invalidatePopupRowsCache();saveSession();rebuildScanListMap(true);renderScanList();
+  updateStats();renderTable();updatePharmacistAuditConfirmBtn();updateConfirmBtn();
+  if(document.getElementById('auditVerifyPopupOverlay')?.style.display==='flex')renderAuditVerifyTable();
+}
+async function _readVerifiedWhCommittedOps(snap,epoch){
+  const ops=[];
+  snap.forEach(doc=>{const data=doc.data()||{};if(data.state==='committed'&&(data.countResetAt||'')===epoch)ops.push({id:doc.id,...data});});
+  ops.sort((a,b)=>_whCompareText(a.committedAt||'',b.committedAt||'')||_whCompareText(a.id,b.id));
+  const loaded=[];
+  for(const op of ops){
+    const resultSnap=await getWhConfirmOpsRef().doc(op.id).collection('results').get({source:'server'});
+    const results={};resultSnap.forEach(doc=>{const marker=doc.data()||{};results[doc.id]={...marker,opId:marker.opId||op.id};});
+    const expected=Number(op.candidateCount);
+    if(!Number.isInteger(expected)||expected<0||Object.keys(results).length!==expected)throw new Error(`WH_CONFIRM_OP_INCOMPLETE:${op.id}`);
+    const hash=await _whWorkflowHashResults(results);
+    if(hash!==(op.candidateHash||''))throw new Error(`WH_CONFIRM_OP_HASH_MISMATCH:${op.id}`);
+    loaded.push({...op,results});
+  }
+  return loaded;
+}
+async function _applyWhCommittedOpsSnapshot(snap,{render=true}={}){
+  const token=++_whConfirmOpsLoadToken;const epoch=_countResetAt||'';
+  const loaded=await _readVerifiedWhCommittedOps(snap,epoch);
+  if(token!==_whConfirmOpsLoadToken||(currentBranch!=='WH')||epoch!==(_countResetAt||''))return false;
+  const nextCount={};const nextRecheck={};const nextOps=new Map();
+  for(const op of loaded){
+    nextOps.set(op.id,op);
+    const target=op.kind==='count'?nextCount:op.kind==='recheck'?nextRecheck:null;if(!target)continue;
+    for(const[sku,marker]of Object.entries(op.results))target[sku]={...marker,opId:op.id,committedAt:op.committedAt||marker.confirmedAt||''};
+  }
+  _whCommittedOps=nextOps;_whCountOpConfirmationData=nextCount;_whRecheckOpConfirmationData=nextRecheck;
+  _rebuildWhConfirmationData();
+  if(render){
+    const countChanged=_applyWhCountConfirmationsToState();
+    const recheckChanged=_applyWhRecheckConfirmationsToState();
+    _renderWhWorkflowStateChanges(countChanged,recheckChanged);
+  }
+  _scheduleWhCommittedOpsRecovery();
+  return true;
+}
+async function _renewBranchConfirmLock(token){
+  if(!_db||!token||!_branchUsesConfirmLock())throw new Error('BRANCH_CONFIRM_UNAVAILABLE');
+  const ref=getBranchConfirmLockRef();const expiresAt=firebase.firestore.Timestamp.fromMillis(Date.now()+BRANCH_CONFIRM_LOCK_MS);
+  await _db.runTransaction(async tx=>{
+    const snap=await tx.get(ref);const data=snap.exists?(snap.data()||{}):{};
+    if(data.token!==token||(data.countResetAt||'')!==(_countResetAt||''))throw new Error('BRANCH_CONFIRM_LOCKED');
+    tx.update(ref,{expiresAt});
+  });
+  if(_branchConfirmLockData?.token===token)_setBranchScanPaused(true,{..._branchConfirmLockData,expiresAt});
+  return true;
+}
+async function _loadWhConfirmOpsFromServer(opts={}){
+  if(!_db||currentBranch!=='WH')return false;
+  const snap=await getWhConfirmOpsRef().where('countResetAt','==',_countResetAt||'').get({source:'server'});
+  return _applyWhCommittedOpsSnapshot(snap,opts);
+}
+async function _requireWhConfirmOpsLoaded(opts={}){
+  for(let attempt=0;attempt<3;attempt++){
+    if(await _loadWhConfirmOpsFromServer(opts))return true;
+    await new Promise(resolve=>setTimeout(resolve,50));
+  }
+  throw new Error('WH_CONFIRM_OP_LOAD_RACE');
+}
+function stopWhConfirmOpsListener(){
+  if(_whConfirmOpsUnsubscribe){_whConfirmOpsUnsubscribe();_whConfirmOpsUnsubscribe=null;}
+  _whConfirmOpsListenerEpoch='';_whConfirmOpsLoadToken++;clearTimeout(_whConfirmOpsReloadTimer);_whConfirmOpsReloadTimer=null;
+  clearTimeout(_whConfirmRecoveryTimer);_whConfirmRecoveryTimer=null;_whConfirmRecoveryDoneKey='';
+  _whCountOpConfirmationData={};_whRecheckOpConfirmationData={};_whCommittedOps.clear();_rebuildWhConfirmationData();
+}
+function _scheduleWhConfirmOpsReload(){
+  if(_whConfirmOpsReloadTimer||!_db||currentBranch!=='WH')return;
+  const epoch=_countResetAt||'';
+  _whConfirmOpsReloadTimer=setTimeout(async()=>{
+    _whConfirmOpsReloadTimer=null;if(currentBranch!=='WH'||(_countResetAt||'')!==epoch)return;
+    try{await _loadWhConfirmOpsFromServer({render:true});}catch(e){console.warn('[WH confirm ops reload]',e.message);}
+  },120);
+}
+function _whCommittedOpsRecoveryKey(){
+  const ids=[..._whCommittedOps.values()].map(op=>`${op.id}:${op.candidateHash||''}`).sort(_whCompareText);
+  return`${_countResetAt||''}|${ids.join('|')}`;
+}
+function _whItemHasMaterializedResult(kind,item,marker){
+  if(!item||!marker)return false;
+  if(kind==='count')return item.whCountOpId===marker.opId&&item.countConfirmedAt===marker.confirmedAt&&
+    Number(item.countedQty)===Number(marker.countedQty);
+  return item.whRecheckOpId===marker.opId&&item.recheckConfirmedAt===marker.confirmedAt&&
+    item.status===marker.status&&Number(item.recheckQty)===Number(marker.recheckQty);
+}
+async function _whFindCommittedRecoveryWork(){
+  const epoch=_countResetAt||'';
+  const[itemsSnap,countPendingDoc,recheckPendingDoc]=await Promise.all([
+    getScanItemsRef('WH').where('countResetAt','==',epoch).get({source:'server'}),
+    getWhCountInboxRef().get({source:'server'}),getWhRecheckInboxRef().get({source:'server'})]);
+  const items={};itemsSnap.forEach(doc=>items[doc.id]=doc.data()||{});
+  const missing=new Set();
+  for(const[sku,marker]of Object.entries(_whCountOpConfirmationData||{}))if(!_whItemHasMaterializedResult('count',items[sku],marker))missing.add(sku);
+  for(const[sku,marker]of Object.entries(_whRecheckOpConfirmationData||{}))if(!_whItemHasMaterializedResult('recheck',items[sku],marker))missing.add(sku);
+  const countPending=countPendingDoc.exists?(countPendingDoc.data()||{}):{};
+  const recheckPending=recheckPendingDoc.exists?(recheckPendingDoc.data()||{}):{};
+  const countCleanup=Object.keys(countPending).filter(sku=>!!_getWhCountConfirmation(sku));
+  const recheckCleanup=Object.keys(recheckPending).filter(sku=>!!_getWhRecheckConfirmation(sku));
+  return{missing:[...missing],countCleanup,recheckCleanup};
+}
+function _scheduleWhCommittedOpsRecovery(delay=600){
+  if(_whConfirmRecoveryTimer||_whConfirmRecoveryPromise||!_db||_adminMode||currentBranch!=='WH'||currentRole!=='supervisor'||!_whCommittedOps.size)return;
+  if(_whConfirmRecoveryDoneKey===_whCommittedOpsRecoveryKey())return;
+  const epoch=_countResetAt||'';
+  _whConfirmRecoveryTimer=setTimeout(()=>{
+    _whConfirmRecoveryTimer=null;if(currentBranch!=='WH'||currentRole!=='supervisor'||(_countResetAt||'')!==epoch)return;
+    _recoverWhCommittedOps().catch(e=>console.warn('[WH confirm recovery]',e.message));
+  },delay);
+}
+async function _recoverWhCommittedOps(){
+  if(_whConfirmRecoveryPromise)return _whConfirmRecoveryPromise;
+  if(!_db||_adminMode||currentBranch!=='WH'||currentRole!=='supervisor'||!_whCommittedOps.size)return false;
+  if(_branchConfirming){_scheduleWhCommittedOpsRecovery(1500);return false;}
+  const epoch=_countResetAt||'';const expectedKey=_whCommittedOpsRecoveryKey();
+  _whConfirmRecoveryPromise=(async()=>{
+    let work=await _whFindCommittedRecoveryWork();
+    if(!work.missing.length&&!work.countCleanup.length&&!work.recheckCleanup.length){_whConfirmRecoveryDoneKey=expectedKey;return true;}
+    let token='';_branchConfirming=true;updateConfirmBtn();updatePharmacistAuditConfirmBtn();
+    try{
+      token=await _acquireBranchConfirmLock();await new Promise(resolve=>setTimeout(resolve,3800));
+      await _requireWhConfirmOpsLoaded({render:true});
+      if(epoch!==(_countResetAt||''))throw new Error('WH_CONFIRM_DATA_CHANGED');
+      work=await _whFindCommittedRecoveryWork();
+      await _renewBranchConfirmLock(token);
+      if(work.missing.length){
+        _applyWhCountConfirmationsToState();_applyWhRecheckConfirmationsToState();
+        await _writeConfirmedItems(work.missing);
+      }
+      if(work.countCleanup.length&&!await _removeWhCountInboxItems(work.countCleanup))throw new Error('WH_COUNT_CLEANUP_FAILED');
+      if(work.recheckCleanup.length&&!await _removeWhRecheckInboxItems(work.recheckCleanup))throw new Error('WH_RECHECK_CLEANUP_FAILED');
+      const verify=await _whFindCommittedRecoveryWork();
+      if(verify.missing.length||verify.countCleanup.length||verify.recheckCleanup.length)throw new Error('WH_CONFIRM_RECOVERY_INCOMPLETE');
+      _whConfirmRecoveryDoneKey=_whCommittedOpsRecoveryKey();return true;
+    }finally{
+      if(token){const released=await _releaseBranchConfirmLock(token);if(released&&_branchConfirmLockData?.token===token)_setBranchScanPaused(false,null);}
+      _branchConfirming=false;updateConfirmBtn();updatePharmacistAuditConfirmBtn();
+    }
+  })();
+  let retry=false;
+  try{return await _whConfirmRecoveryPromise;}
+  catch(e){retry=true;throw e;}
+  finally{_whConfirmRecoveryPromise=null;if(retry)_scheduleWhCommittedOpsRecovery(10000);}
+}
+function _whReapplyAuthoritativeResult(sku){
+  let changed=false;
+  const countMarker=_getWhCountConfirmation(sku);if(countMarker)changed=_applyWhCountConfirmationToSku(sku,countMarker)||changed;
+  const recheckMarker=_getWhRecheckConfirmation(sku);if(recheckMarker)changed=_applyWhRecheckConfirmationToSku(sku,recheckMarker)||changed;
+  return changed;
+}
+function startWhConfirmOpsListener(){
+  if(!_db||_adminMode||currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return;
+  const epoch=_countResetAt||'';
+  if(_whConfirmOpsUnsubscribe&&_whConfirmOpsListenerEpoch===epoch)return;
+  stopWhConfirmOpsListener();_whConfirmOpsListenerEpoch=epoch;
+  _whConfirmOpsUnsubscribe=getWhConfirmOpsRef().where('countResetAt','==',epoch).onSnapshot(async snap=>{
+    if(snap.metadata.hasPendingWrites)return;
+    try{await _applyWhCommittedOpsSnapshot(snap,{render:true});document.getElementById('dbStatus').textContent='Synced ☁️';}
+    catch(e){document.getElementById('dbStatus').textContent='Sync Error';console.warn('[WH confirm ops listener]',e.message);toast('โหลดผลยืนยัน WH ไม่ครบ — คงสถานะเดิมและกำลังรอ Sync','error',5000);}
+  },e=>console.warn('[WH confirm ops listener]',e.message));
+}
+
 async function _loadWhWorkflowCloudState(){
   if(!_db||currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return;
   const docs=await Promise.all([getWhCountConfirmationRef().get(),getWhCountInboxRef().get(),getWhRecheckConfirmationRef().get(),getWhRecheckInboxRef().get()]);
-  _whCountConfirmationData=docs[0].exists?(docs[0].data()||{}):{};
+  _whLegacyCountConfirmationData=docs[0].exists?(docs[0].data()||{}):{};
   _whCountInboxData=docs[1].exists?(docs[1].data()||{}):{};
-  _whRecheckConfirmationData=docs[2].exists?(docs[2].data()||{}):{};
+  _whLegacyRecheckConfirmationData=docs[2].exists?(docs[2].data()||{}):{};
   _whRecheckInboxData=docs[3].exists?(docs[3].data()||{}):{};
+  _rebuildWhConfirmationData();
+  await _loadWhConfirmOpsFromServer({render:false});
   _applyWhCountConfirmationsToState();_applyWhCountInboxToState();_applyWhRecheckConfirmationsToState();_applyWhRecheckInboxToState();
   invalidatePopupRowsCache();rebuildScanListMap(true);renderScanList();updateStats();renderTable();updateConfirmBtn();
 }
@@ -1862,7 +2103,7 @@ function stopWhCountInboxListener(){
 }
 function stopWhCountConfirmationListener(){
   if(_whCountConfirmationUnsubscribe){_whCountConfirmationUnsubscribe();_whCountConfirmationUnsubscribe=null;}
-  _whCountConfirmationData={};
+  _whLegacyCountConfirmationData={};_rebuildWhConfirmationData();
 }
 function _getWhCountConfirmation(sku){
   const marker=_whCountConfirmationData?.[sku];
@@ -1870,22 +2111,20 @@ function _getWhCountConfirmation(sku){
   if((marker.countResetAt||'')!==(_countResetAt||''))return null;
   return marker;
 }
-function _applyWhCountConfirmationsToState(){
-  if(currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return [];
-  const changed=[];
-  for(const[sku,marker]of Object.entries(_whCountConfirmationData||{})){
-    if(!marker||!marker.confirmedAt||!['pass','audit','stock_adjustment'].includes(marker.status))continue;
-    if((marker.countResetAt||'')!==(_countResetAt||''))continue;
+function _applyWhCountConfirmationToSku(sku,marker){
+    if(!marker||!marker.confirmedAt||!['pass','audit','stock_adjustment'].includes(marker.status))return false;
+    if((marker.countResetAt||'')!==(_countResetAt||''))return false;
     let sd=state.scanData.get(sku);
     if(!sd&&state.skuMap.has(sku)){
       sd={countedQty:0,status:'pending',retries:0,timestamp:'',scannedBy:'',auditor:'',auditStatus:'pending',barcode:'',location:'',scans:[]};
       state.scanData.set(sku,sd);
     }
-    if(!sd||sd.auditor||sd.recheckConfirmedAt)continue;
-    if(sd.countConfirmedAt&&String(sd.countConfirmedAt)>String(marker.confirmedAt))continue;
+    if(!sd||sd.auditor||sd.recheckConfirmedAt)return false;
+    if(sd.countConfirmedAt&&String(sd.countConfirmedAt)>String(marker.confirmedAt))return false;
     const same=sd.countConfirmedAt===marker.confirmedAt&&sd.status===marker.status&&
-      Number(sd.countedQty||0)===Number(marker.countedQty||0)&&sd.scannedBy===(marker.scannedBy||'');
-    if(same)continue;
+      Number(sd.countedQty||0)===Number(marker.countedQty||0)&&sd.scannedBy===(marker.scannedBy||'')&&
+      (!marker.opId||sd.whCountOpId===marker.opId);
+    if(same)return false;
     const isNewConfirmation=sd.countConfirmedAt!==marker.confirmedAt;
     sd.countedQty=Number(marker.countedQty||0);
     sd.status=marker.status;
@@ -1908,16 +2147,22 @@ function _applyWhCountConfirmationsToState(){
     sd.initialStatus=marker.status;
     sd.countConfirmedAt=marker.confirmedAt;
     sd.countConfirmedBy=marker.confirmedBy||'';
+    if(marker.opId)sd.whCountOpId=marker.opId;
     if(isNewConfirmation&&marker.status==='audit'){
       delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;
     }
-    changed.push(sku);
+    return true;
+}
+function _applyWhCountConfirmationsToState(){
+  if(currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return [];
+  const changed=[];
+  for(const[sku,marker]of Object.entries(_whCountConfirmationData||{})){
+    if(_applyWhCountConfirmationToSku(sku,marker))changed.push(sku);
   }
   return changed;
 }
 function _renderWhCountConfirmationChanges(changed){
   if(!changed.length)return;
-  _removeWhCountInboxItems(changed);
   invalidatePopupRowsCache();saveSession();rebuildScanListMap(true);renderScanList();
   updateStats();renderTable();updatePharmacistAuditConfirmBtn();updateConfirmBtn();
 }
@@ -1925,7 +2170,7 @@ function startWhCountConfirmationListener(){
   if(_whCountConfirmationUnsubscribe){_whCountConfirmationUnsubscribe();_whCountConfirmationUnsubscribe=null;}
   if(!_db||_adminMode||currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return;
   _whCountConfirmationUnsubscribe=getWhCountConfirmationRef().onSnapshot(doc=>{
-    _whCountConfirmationData=doc.exists?(doc.data()||{}):{};
+    _whLegacyCountConfirmationData=doc.exists?(doc.data()||{}):{};_rebuildWhConfirmationData();
     _renderWhCountConfirmationChanges(_applyWhCountConfirmationsToState());
   },e=>console.warn('[WH count confirmation listener]',e.message));
 }
@@ -1976,6 +2221,9 @@ function _writeWhCountInboxItem(sku){
   const sd=state.scanData.get(sku);
   if(!sd||sd.status!=='scanning'||sd.countedQty==null)return;
   sd.countAt=new Date().toISOString();
+  // workflow v2 ใช้ items/{sku} เป็น live source; ไม่เติม dynamic-map เดิมที่ชน index ceiling แล้ว
+  // คง legacy write เฉพาะกรณี rollback สู่ schema v1 เท่านั้น
+  if(_isScanSchemaV2())return;
   const item={
     countedQty:Number(sd.countedQty),scannedBy:sd.scannedBy||currentUser||'',
     timestamp:sd.timestamp||'',firstScanAt:sd.firstScanAt||sd.timestamp||'',
@@ -1987,6 +2235,7 @@ function _writeWhCountInboxItem(sku){
 }
 function _backfillWhCountInbox(){
   if(_adminMode||!_db||currentBranch!=='WH'||currentRole!=='warehouse')return;
+  if(_isScanSchemaV2()){_reconcileScanItems();return;}
   const payload={};
   for(const[sku,sd]of state.scanData.entries()){
     if(!sd||sd.status!=='scanning'||sd.countedQty==null||(sd.scannedBy||'')!==currentUser)continue;
@@ -2001,14 +2250,20 @@ function _backfillWhCountInbox(){
   getWhCountInboxRef().set(payload,{merge:true})
     .catch(e=>{document.getElementById('dbStatus').textContent='Sync Error';console.warn('[WH count inbox backfill]',e.message);});
 }
-function _removeWhCountInboxItems(skus){
-  if(!_db||currentBranch!=='WH'||!skus||!skus.length)return;
-  const patch={};for(const sku of skus)patch[sku]=firebase.firestore.FieldValue.delete();
-  getWhCountInboxRef().set(patch,{merge:true}).catch(e=>console.warn('[WH count inbox remove]',e.message));
+async function _removeWhCountInboxItems(skus){
+  if(!_db||currentBranch!=='WH'||!skus||!skus.length)return true;
+  const unique=[...new Set(skus.map(String))];
+  try{
+    for(let i=0;i<unique.length;i+=WH_CONFIRM_RESULT_BATCH_SIZE){
+      const patch={};for(const sku of unique.slice(i,i+WH_CONFIRM_RESULT_BATCH_SIZE))patch[sku]=firebase.firestore.FieldValue.delete();
+      await getWhCountInboxRef().set(patch,{merge:true});
+    }
+    return true;
+  }catch(e){console.warn('[WH count inbox remove]',e.message);return false;}
 }
 function stopWhRecheckConfirmationListener(){
   if(_whRecheckConfirmationUnsubscribe){_whRecheckConfirmationUnsubscribe();_whRecheckConfirmationUnsubscribe=null;}
-  _whRecheckConfirmationData={};
+  _whLegacyRecheckConfirmationData={};_rebuildWhConfirmationData();
 }
 function _getWhRecheckConfirmation(sku){
   const marker=_whRecheckConfirmationData?.[sku];
@@ -2016,22 +2271,20 @@ function _getWhRecheckConfirmation(sku){
   if((marker.countResetAt||'')!==(_countResetAt||''))return null;
   return marker;
 }
-function _applyWhRecheckConfirmationsToState(){
-  if(currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return [];
-  const changed=[];
-  for(const[sku,marker]of Object.entries(_whRecheckConfirmationData||{})){
-    if(!marker||!marker.confirmedAt||!['pass','stock_adjustment'].includes(marker.status))continue;
-    if((marker.countResetAt||'')!==(_countResetAt||''))continue;
+function _applyWhRecheckConfirmationToSku(sku,marker){
+    if(!marker||!marker.confirmedAt||!['pass','stock_adjustment'].includes(marker.status))return false;
+    if((marker.countResetAt||'')!==(_countResetAt||''))return false;
     let sd=state.scanData.get(sku);
     if(!sd&&state.skuMap.has(sku)){
       sd={countedQty:0,status:'pending',retries:0,timestamp:'',scannedBy:'',auditor:'',auditStatus:'pending',barcode:'',location:'',scans:[]};
       state.scanData.set(sku,sd);
     }
-    if(!sd)continue;
-    if(sd.recheckConfirmedAt&&String(sd.recheckConfirmedAt)>String(marker.confirmedAt))continue;
+    if(!sd)return false;
+    if(sd.recheckConfirmedAt&&String(sd.recheckConfirmedAt)>String(marker.confirmedAt))return false;
     const same=sd.status===marker.status&&sd.auditor===(marker.auditor||'')&&
-      sd.recheckConfirmedAt===marker.confirmedAt&&sd.recheckQty===Number(marker.recheckQty);
-    if(same)continue;
+      sd.recheckConfirmedAt===marker.confirmedAt&&sd.recheckQty===Number(marker.recheckQty)&&
+      (!marker.opId||sd.whRecheckOpId===marker.opId);
+    if(same)return false;
     sd.status=marker.status;
     sd.auditStatus=marker.auditStatus||(marker.status==='pass'?'approved':'stock_adjustment');
     sd.auditor=marker.auditor||'';
@@ -2044,13 +2297,19 @@ function _applyWhRecheckConfirmationsToState(){
     sd.r01Version=marker.r01Version||'';
     sd.r16Version=marker.r16Version||'';
     sd.r16_103Version=marker.r16_103Version||'';
-    changed.push(sku);
+    if(marker.opId)sd.whRecheckOpId=marker.opId;
+    return true;
+}
+function _applyWhRecheckConfirmationsToState(){
+  if(currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return [];
+  const changed=[];
+  for(const[sku,marker]of Object.entries(_whRecheckConfirmationData||{})){
+    if(_applyWhRecheckConfirmationToSku(sku,marker))changed.push(sku);
   }
   return changed;
 }
 function _renderWhRecheckConfirmationChanges(changed){
   if(!changed.length)return;
-  _removeWhRecheckInboxItems(changed);
   invalidatePopupRowsCache();saveSession();rebuildScanListMap(true);renderScanList();
   updateStats();renderTable();updatePharmacistAuditConfirmBtn();
 }
@@ -2058,7 +2317,7 @@ function startWhRecheckConfirmationListener(){
   if(_whRecheckConfirmationUnsubscribe){_whRecheckConfirmationUnsubscribe();_whRecheckConfirmationUnsubscribe=null;}
   if(!_db||_adminMode||currentBranch!=='WH'||(currentRole!=='supervisor'&&currentRole!=='warehouse'))return;
   _whRecheckConfirmationUnsubscribe=getWhRecheckConfirmationRef().onSnapshot(doc=>{
-    _whRecheckConfirmationData=doc.exists?(doc.data()||{}):{};
+    _whLegacyRecheckConfirmationData=doc.exists?(doc.data()||{}):{};_rebuildWhConfirmationData();
     _renderWhRecheckConfirmationChanges(_applyWhRecheckConfirmationsToState());
   },e=>console.warn('[WH recheck confirmation listener]',e.message));
 }
@@ -2103,6 +2362,7 @@ function _writeWhRecheckInboxItem(sku){
   if(_getWhRecheckConfirmation(sku))return;
   const sd=state.scanData.get(sku);
   if(!sd||sd.status!=='audit'||sd.recheckQty==null)return;
+  if(_isScanSchemaV2())return;
   const item={
     recheckQty:Number(sd.recheckQty),recheckBy:sd.recheckBy||currentUser||'',
     recheckAt:sd.recheckAt||new Date().toISOString(),countResetAt:_countResetAt||''
@@ -2112,6 +2372,7 @@ function _writeWhRecheckInboxItem(sku){
 }
 function _backfillWhRecheckInbox(){
   if(_adminMode||!_db||currentBranch!=='WH'||currentRole!=='warehouse')return;
+  if(_isScanSchemaV2()){_reconcileScanItems();return;}
   const payload={};
   for(const[sku,sd]of state.scanData.entries()){
     if(!sd||sd.status!=='audit'||sd.recheckQty==null||(sd.recheckBy||'')!==currentUser)continue;
@@ -2123,10 +2384,16 @@ function _backfillWhRecheckInbox(){
   getWhRecheckInboxRef().set(payload,{merge:true})
     .catch(e=>console.warn('[WH recheck inbox backfill]',e.message));
 }
-function _removeWhRecheckInboxItems(skus){
-  if(!_db||currentBranch!=='WH'||!skus||!skus.length)return;
-  const patch={};for(const sku of skus)patch[sku]=firebase.firestore.FieldValue.delete();
-  return getWhRecheckInboxRef().set(patch,{merge:true}).catch(e=>console.warn('[WH recheck inbox remove]',e.message));
+async function _removeWhRecheckInboxItems(skus){
+  if(!_db||currentBranch!=='WH'||!skus||!skus.length)return true;
+  const unique=[...new Set(skus.map(String))];
+  try{
+    for(let i=0;i<unique.length;i+=WH_CONFIRM_RESULT_BATCH_SIZE){
+      const patch={};for(const sku of unique.slice(i,i+WH_CONFIRM_RESULT_BATCH_SIZE))patch[sku]=firebase.firestore.FieldValue.delete();
+      await getWhRecheckInboxRef().set(patch,{merge:true});
+    }
+    return true;
+  }catch(e){console.warn('[WH recheck inbox remove]',e.message);return false;}
 }
 function startScanSessionListener(){
   if(!_db||!currentBranch||_adminMode)return;
@@ -2179,6 +2446,7 @@ function _applyCloudSessionMeta(s){
     _resetLocalR01ToEmpty();
     _scanItemRev.clear();_scanItemSynced.clear();_dirtySkus.clear();_scanItemInFlight.clear();_scanItemFailStreak=0;_scanItemBackoffUntil=0;
     startScanItemsListener(); // epoch เปลี่ยน → query เดิมชี้ epoch เก่า ต้อง restart
+    startWhConfirmOpsListener();
   }
   if(Array.isArray(s.unknownScans)){
     const existBc=new Set(state.unknownScans.map(u=>u.barcode));
@@ -2223,6 +2491,14 @@ function stopScanItemsListener(){
 function _applyScanItemChange(sku,data){
   if(!data)return false;
   if(String(data.countResetAt||'')!==(_countResetAt||''))return false;
+  // final item เป็น materialized cache ของ operation: ห้ามแสดงทีละ batch ก่อนโหลด/verify parent+results ครบทั้งชุด
+  if(currentBranch==='WH'){
+    const opId=data.whRecheckOpId||data.whCountOpId;
+    if(opId&&!_whCommittedOps.has(opId)){
+      _scheduleWhConfirmOpsReload();
+      return false;
+    }
+  }
   // ยังมีการแก้ในเครื่องที่รอ flush / กำลังเขียนอยู่ → อย่าเพิ่งรับค่าจาก cloud
   // (echo ของ write ตัวก่อนหน้าจะมาถึงหลังเราสแกนเพิ่ม แล้วดึงยอดกลับไปค่าเก่า)
   // transaction ใน _writeScanningItem เป็นจุดรวมค่าที่ถูกต้องอยู่แล้ว
@@ -2233,6 +2509,8 @@ function _applyScanItemChange(sku,data){
   _scanItemRev.set(sku,Number(data.rev)||0);
   // สำคัญ: อัพ fingerprint ที่ sync แล้วด้วย ไม่งั้น delta ใน _writeScanningItem จะนับยอดของเครื่องอื่นซ้ำ
   _scanItemSynced.set(sku,_scanItemFingerprint(state.scanData.get(sku)));
+  // item เป็น materialized cache; committed op/legacy final ของ epoch เดียวกันต้องชนะ delayed PDA snapshot
+  if(currentBranch==='WH')_whReapplyAuthoritativeResult(sku);
   return true;
 }
 function _applyScanItemRemoved(sku){
@@ -2240,6 +2518,9 @@ function _applyScanItemRemoved(sku){
   if(!local||local.status==='pending')return false;
   // เครื่องนี้เพิ่งแก้/สแกนเอง → อย่าให้การลบจากเครื่องอื่นล้างของสด (มี dirty รออยู่แล้ว)
   if(_dirtySkus.has(sku)||_scanItemInFlight.has(sku))return false;
+  if(currentBranch==='WH'&&(_getWhCountConfirmation(sku)||_getWhRecheckConfirmation(sku))){
+    _whReapplyAuthoritativeResult(sku);_markSkuDirty(sku);return true;
+  }
   _scanItemRev.delete(sku);_scanItemSynced.delete(sku);
   state.scanData.set(sku,{countedQty:0,status:'pending',retries:0,timestamp:'',scannedBy:'',auditor:'',auditStatus:'pending',barcode:'',location:local.location||'',scans:[]});
   scanListMap.delete(sku);
@@ -2392,7 +2673,7 @@ function selectEmployee(name,role){
     if(_employeeCallback)_employeeCallback();
     else{
       startWhMasterListeners();startScanSessionListener();startBranchConfirmLockListener();startPharmacyAuditMarkerListener();
-      startWhCountConfirmationListener();startWhCountInboxListener();startWhRecheckConfirmationListener();startWhRecheckInboxListener();
+      startWhCountConfirmationListener();startWhCountInboxListener();startWhRecheckConfirmationListener();startWhRecheckInboxListener();startWhConfirmOpsListener();
       startScanItemReconcile();
     }
     _employeeCallback=null;
@@ -2487,6 +2768,7 @@ async function initAfterLogin(){
     startWhCountInboxListener();
     startWhRecheckConfirmationListener();
     startWhRecheckInboxListener();
+    startWhConfirmOpsListener();
     startBranchConfirmLockListener();
     startPharmacyAuditMarkerListener();
     // เภสัช: force rebuild เพื่อ clear scanListMap ที่ restore มา (มี pass ปน) แล้วกรอง audit-only ใหม่
@@ -2557,6 +2839,7 @@ async function selectBranch(branch){
   stopWhCountInboxListener();
   stopWhRecheckConfirmationListener();
   stopWhRecheckInboxListener();
+  stopWhConfirmOpsListener();
   stopLocationListener();
   stopR05Listener();
   if(_pinVerified){
@@ -3046,6 +3329,13 @@ async function startNewCount(){
   const pin=prompt('🔒 บันทึกประวัติและเริ่มนับใหม่ กรุณาใส่รหัส PIN:');
   if(pin===null)return;
   if(pin!==CLEAR_PIN){toast('รหัส PIN ไม่ถูกต้อง','error');return;}
+  if(currentBranch==='WH'&&(_branchConfirming||_isBranchConfirmLockActive())){toast('มีการ Confirm อยู่ — รอให้เสร็จก่อนเริ่มนับใหม่','warn',5000);return;}
+  let resetLockToken='';
+  if(_db&&!_adminMode&&currentBranch==='WH'){
+    try{resetLockToken=await _acquireBranchConfirmLock();await new Promise(resolve=>setTimeout(resolve,3800));}
+    catch(e){toast(e.message==='BRANCH_CONFIRM_LOCKED'?'มี Desktop เครื่องอื่นกำลัง Confirm อยู่':'ล็อกสาขาเพื่อเริ่มนับใหม่ไม่สำเร็จ','warn',5000);return;}
+  }
+  try{
   const _d=new Date();
   const dateStr=`${_d.getFullYear()}-${String(_d.getMonth()+1).padStart(2,'0')}-${String(_d.getDate()).padStart(2,'0')}`;
   const savedAt=`${dateStr} ${String(_d.getHours()).padStart(2,'0')}:${String(_d.getMinutes()).padStart(2,'0')}`;
@@ -3055,7 +3345,7 @@ async function startNewCount(){
   state.r01Data=[];state.r01Version='';state.r16Data=[];state.r16SalesMap.clear();state.r16RawMap.clear();state.r16InboundMap.clear();state.r16InboundRawMap.clear();state.r16Loaded=false;state.r16DateMismatch=false;
   state.r16_103Map.clear();state.r16_103RawMap.clear();state.r16_103Loaded=false;state.r16_103UploadedAt='';
   state.r16DetailVersion='';state.r16_103DetailVersion='';
-  if(currentBranch==='WH'){_whCountConfirmationData={};_whCountInboxData={};_whRecheckConfirmationData={};_whRecheckInboxData={};await _clearWhR16TimelineSnapshot();}
+  if(currentBranch==='WH'){_whLegacyCountConfirmationData={};_whLegacyRecheckConfirmationData={};_whCountOpConfirmationData={};_whRecheckOpConfirmationData={};_whCountConfirmationData={};_whCountInboxData={};_whRecheckConfirmationData={};_whRecheckInboxData={};_whCommittedOps.clear();stopWhConfirmOpsListener();await _clearWhR16TimelineSnapshot();}
   _lotMap.clear();_lotSelected.clear();_priceMap.clear(); // ล้าง LOT/ราคา ที่แนบไว้ในป็อปอัพปรับปรุงลดสินค้า (local)
   document.getElementById('badgeR01').textContent='ยังไม่โหลด';
   document.getElementById('badgeR16').textContent='ยังไม่โหลด';document.getElementById('badgeR16').parentElement.classList.remove('upload-file-badge-warn');
@@ -3066,18 +3356,31 @@ async function startNewCount(){
   _countResetAt=new Date().toISOString();
   _r01BaselineAt='';
   _pharmacyAuditMarkerData={branch:currentBranch,countResetAt:_countResetAt,items:{}};
-  // ล้าง items ของรอบเก่า — ขอบ startNewCount คือจุด cutover ไป schema v2 (scanData ว่างอยู่แล้ว จึงไม่ต้อง migrate)
+  // เตรียม local รอบใหม่ก่อน แต่ยังห้ามลบข้อมูล authoritative รอบเก่าจนกว่า epoch ใหม่ขึ้น Cloud สำเร็จ
   _dirtySkus.clear();_scanItemRev.clear();_scanItemSynced.clear();_scanItemInFlight.clear();_scanItemFailStreak=0;_scanItemBackoffUntil=0;
   clearTimeout(_scanItemFlushTimer);_scanItemFlushTimer=null;
   stopScanItemsListener();
-  if(_db&&!_adminMode){try{await _deleteScanItemsForEpoch(_prevEpoch);}catch(e){console.warn('[startNewCount] clear items:',e.message);}}
   _schemaVersion=SCAN_SCHEMA_V2;
   // sync ขึ้น cloud ตอน scanData ยัง "ว่าง" (ก่อน rebuildMaps) → cloud ได้ scanData={} + epoch ใหม่
   // → ทุก SKU "หายจาก cloud" จริง ด่านกัน resurrection ใน syncToFirestore (ที่พึ่ง !mergedSd[k]) จึงทำงาน
   // และไม่ broadcast pending ทั้ง catalog กลับขึ้น cloud (ต้นเหตุที่ทำให้ confirmed เด้งกลับ)
   clearTimeout(_firestoreSyncTimer);
-  await syncToFirestore(true);
+  const epochSynced=await syncToFirestore(true);
+  if(!epochSynced){
+    _countResetAt=_prevEpoch;
+    try{
+      await restoreMasterFromFirestore(true);rebuildMaps();
+      if(currentBranch==='WH'){if(currentRole==='supervisor')await _loadWhR16CloudTimelines();await _loadWhWorkflowCloudState();}
+      await pullFromCloud();
+    }catch(e){console.warn('[startNewCount] restore after failed epoch sync:',e.message);}
+    startScanItemsListener();startWhConfirmOpsListener();
+    toast('เริ่มนับใหม่ไม่สำเร็จ — ยังไม่ได้ลบข้อมูลรอบเดิม กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่','error',7000);
+    return;
+  }
+  // epoch ใหม่เป็น authoritative แล้ว จึงค่อยลบ cache/results ของรอบเก่าแบบ best-effort
+  if(_db&&!_adminMode){try{await _deleteScanItemsForEpoch(_prevEpoch);}catch(e){console.warn('[startNewCount] clear items:',e.message);}if(currentBranch==='WH'){try{await _deleteWhConfirmOpsForEpoch(_prevEpoch);}catch(e){console.warn('[startNewCount] clear WH confirm ops:',e.message);}}}
   startScanItemsListener();
+  startWhConfirmOpsListener();
   if(currentBranch==='WH'&&_db&&!_adminMode){try{await _clearWhR16CloudTimelines();}catch(e){console.warn('[startNewCount] clear WH R16 chunks:',e.message);}}
   // ล้าง master doc R01 (stock_sessions/${id}_r01) ด้วย — ไม่งั้น restoreMasterFromFirestore จะกู้ R01 + timestamp
   // กลับมาตอน reload/re-login (badge เด้งเป็น Ready, เวลาอัพเก่าโผล่). _r05 ไม่ลบ — barcode mapping คงไว้
@@ -3086,6 +3389,9 @@ async function startNewCount(){
   rebuildMaps();saveSession(); // repopulate pending เฉพาะ local (sync(false) ที่ตามมาจะไม่อัป pending)
   renderScanList();updateStats();renderTable();invalidatePopupRowsCache();updateConfirmBtn();
   toast(`เริ่มนับใหม่เรียบร้อย`,'success');
+  }finally{
+    if(resetLockToken){const released=await _releaseBranchConfirmLock(resetLockToken);if(released&&_branchConfirmLockData?.token===resetLockToken)_setBranchScanPaused(false,null);}
+  }
 }
 
 
@@ -3101,7 +3407,7 @@ async function clearAllData() {
   clearTimeout(_scanItemFlushTimer);_scanItemFlushTimer=null;
   stopScanItemsListener();
   // ลบ items subcollection ก่อนลบ session doc — Firestore ไม่ลบ subcollection ตาม parent ให้อัตโนมัติ
-  if(_db&&currentBranch){try{await _deleteAllScanItems();}catch(e){console.warn('[clearAllData] clear items:',e.message);}}
+  if(_db&&currentBranch){try{await _deleteAllScanItems();}catch(e){console.warn('[clearAllData] clear items:',e.message);}if(currentBranch==='WH'){try{await _deleteAllWhConfirmOps();}catch(e){console.warn('[clearAllData] clear WH confirm ops:',e.message);}}}
   if(_db&&currentBranch==='WH'){try{await _clearWhR16CloudTimelines();}catch(e){console.warn('[clearAllData] clear WH R16 chunks:',e.message);}}
   // _r05 ไม่ลบ cloud — global doc ใช้ร่วมทุกสาขาแล้ว (เหมือน global_pm ที่ก็ไม่ลบตรงนี้), ล้างแค่ local เดี๋ยว resync กลับตอน reload
   if(_db&&currentBranch){const id=getSessionId();try{const deletes=[_db.collection('stock_sessions').doc(id).delete(),_db.collection('stock_sessions').doc(id+'_master').delete(),_db.collection('stock_sessions').doc(id+'_r01').delete()];if(_isPharmacyBranch())deletes.push(getPharmacyAuditMarkerRef().delete());if(currentBranch==='WH')deletes.push(getWhCountInboxRef().delete(),getWhCountConfirmationRef().delete(),getWhRecheckInboxRef().delete(),getWhRecheckConfirmationRef().delete());await Promise.all(deletes);}catch(e){console.warn('Firestore delete:',e.message);}}
@@ -3109,7 +3415,7 @@ async function clearAllData() {
   state.r01Data=[];state.r01Version='';state.r05Data=[];state.r16Data=[];state.r16SalesMap.clear();state.r16RawMap.clear();state.r16InboundMap.clear();state.r16InboundRawMap.clear();state.r16Loaded=false;state.r16DateMismatch=false;
   state.r16_103Map.clear();state.r16_103RawMap.clear();state.r16_103Loaded=false;state.r16_103UploadedAt='';
   state.r16DetailVersion='';state.r16_103DetailVersion='';
-  if(currentBranch==='WH'){_whCountConfirmationData={};_whCountInboxData={};_whRecheckConfirmationData={};_whRecheckInboxData={};await _clearWhR16TimelineSnapshot();}
+  if(currentBranch==='WH'){_whLegacyCountConfirmationData={};_whLegacyRecheckConfirmationData={};_whCountOpConfirmationData={};_whRecheckOpConfirmationData={};_whCountConfirmationData={};_whCountInboxData={};_whRecheckConfirmationData={};_whRecheckInboxData={};_whCommittedOps.clear();stopWhConfirmOpsListener();await _clearWhR16TimelineSnapshot();}
   _countResetAt='';
   _pharmacyAuditMarkerData={};
   ['R01','R05','R16'].forEach(k=>{document.getElementById('badge'+k).textContent='ยังไม่โหลด';});document.getElementById('badgeR16').parentElement.classList.remove('upload-file-badge-warn');
@@ -3820,8 +4126,9 @@ function updateConfirmBtn(){
   if(!btn)return;
   const whLoading=currentBranch==='WH'&&currentRole==='supervisor'&&_whR16TimelineLoading;
   const pdaBlocked=_isPdaApp()&&_isPharmacyBranch();
-  const branchBusy=_isPharmacyBranch()&&(_branchConfirming||_branchScanPaused||_isBranchConfirmLockActive());
-  btn.disabled=!state.r16Loaded||whLoading||pdaBlocked||branchBusy;
+  const branchBusy=_branchUsesConfirmLock()&&(_branchConfirming||_branchScanPaused||_isBranchConfirmLockActive());
+  const whBusy=currentBranch==='WH'&&(_whCountConfirming||_whRecheckConfirming);
+  btn.disabled=!state.r16Loaded||whLoading||pdaBlocked||branchBusy||whBusy;
   btn.title=pdaBlocked?'Confirm สาขาได้เฉพาะ Desktop':branchBusy?'มี Desktop กำลัง Confirm อยู่':whLoading?'กำลังโหลด R01/R16 จาก Cloud':(state.r16Loaded?'':'กรุณาโหลดไฟล์ R16.104 ก่อน');
 }
 
@@ -3908,16 +4215,15 @@ async function _writeConfirmedItems(skus){
   if(!_isScanSchemaV2()||!skus.length)return;
   const itemsRef=getScanItemsRef();
   for(let i=0;i<skus.length;i+=SCAN_ITEM_BATCH_SIZE){
-    const batch=_db.batch();
+    const batch=_db.batch();const committed=[];
     for(const sku of skus.slice(i,i+SCAN_ITEM_BATCH_SIZE)){
       const sd=state.scanData.get(sku);if(!sd)continue;
       const rev=(_scanItemRev.get(sku)||0)+1;
-      _scanItemRev.set(sku,rev);
       batch.set(itemsRef.doc(sku),_scanItemPayload(sku,sd,rev),{merge:false});
-      _scanItemSynced.set(sku,_scanItemFingerprint(sd));
-      _dirtySkus.delete(sku);
+      committed.push({sku,sd,rev});
     }
     await batch.commit();
+    for(const{sku,sd,rev}of committed){_scanItemRev.set(sku,rev);_scanItemSynced.set(sku,_scanItemFingerprint(sd));_dirtySkus.delete(sku);}
   }
 }
 async function _confirmPharmacyBatched(){
@@ -4160,8 +4466,141 @@ async function _confirmPharmacyAuditBatched(){
   }
 }
 
+function _whWorkflowToday(){const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+function _whNewConfirmOpId(kind){return`${kind}_${Date.now().toString(36)}_${(crypto.randomUUID?crypto.randomUUID():Math.random().toString(36).slice(2)).replace(/-/g,'').slice(0,16)}`;}
+function _whCountSourceValid(item,today){
+  if(!item||item.countedQty==null||(item.countResetAt||'')!==(_countResetAt||''))return false;
+  if(item.timestamp&&String(item.timestamp).substring(0,10)<today)return false;
+  const qty=Number(item.countedQty);return Number.isFinite(qty)&&qty>=0;
+}
+function _whRecheckSourceValid(item){
+  if(!item||item.recheckQty==null||(item.countResetAt||'')!==(_countResetAt||''))return false;
+  const qty=Number(item.recheckQty);return Number.isFinite(qty)&&qty>=0;
+}
+function _whResolveSource(kind,itemSource,legacySource,today){
+  const valid=kind==='count'?x=>_whCountSourceValid(x,today):_whRecheckSourceValid;
+  const item=valid(itemSource)?itemSource:null;const legacy=valid(legacySource)?legacySource:null;
+  if(!item)return legacy;if(!legacy)return item;
+  const key=kind==='count'?'countAt':'recheckAt';return String(legacy[key]||'')>=String(item[key]||'')?legacy:item;
+}
+function _whSourceFingerprint(kind,sku,source,rev){
+  const fields=kind==='count'
+    ?['countedQty','scannedBy','countAt','timestamp','firstScanAt','barcode','location','countResetAt']
+    :['recheckQty','recheckBy','recheckAt','countResetAt'];
+  const out={kind,sku:String(sku),sourceRev:Number(rev)||0};for(const key of fields)out[key]=source?.[key]??'';
+  return _whStableJson(out);
+}
+function _whValidateMasterDocs(r01Doc,meta104Doc,meta103Doc,{strictTimeline=true}={}){
+  if(!r01Doc.exists||!r01Doc.data().r01Version)throw new Error('WH_MASTER_VERSION_MISMATCH:R01_MISSING');
+  const r01Data=r01Doc.data()||{};const r01Version=r01Data.r01Version||'';
+  const meta104=meta104Doc.exists?(meta104Doc.data()||{}):{};const meta103=meta103Doc.exists?(meta103Doc.data()||{}):{};
+  const r16Version=meta104.ready&&(meta104.countResetAt||'')===(_countResetAt||'')&&(meta104.r01Version||'')===r01Version?(meta104.version||''):'';
+  const r16_103Version=meta103.ready&&(meta103.countResetAt||'')===(_countResetAt||'')&&(meta103.r01Version||'')===r01Version?(meta103.version||''):'';
+  if(strictTimeline&&(r01Version!==(state.r01Version||'')||!r16Version||r16Version!==(state.r16DetailVersion||'')||
+    r16_103Version!==(state.r16_103DetailVersion||'')||!_whR16TimelineReady||(r16_103Version&&!_whR16103TimelineReady)))throw new Error('WH_MASTER_VERSION_MISMATCH:RELOAD');
+  return{r01Data,r01Version,r16Version,r16_103Version};
+}
+async function _whReadConfirmSources(kind,staffName=null){
+  const epoch=_countResetAt||'';const today=_whWorkflowToday();
+  const pendingRef=kind==='count'?getWhCountInboxRef():getWhRecheckInboxRef();
+  const legacyFinalRef=kind==='count'?getWhCountConfirmationRef():getWhRecheckConfirmationRef();
+  const[sessionDoc,r01Doc,meta104Doc,meta103Doc,pendingDoc,legacyFinalDoc,itemsSnap]=await Promise.all([
+    _db.collection('stock_sessions').doc('WH').get({source:'server'}),
+    _db.collection('stock_sessions').doc('WH_r01').get({source:'server'}),getWhR16MetaRef('104').get({source:'server'}),getWhR16MetaRef('103').get({source:'server'}),
+    pendingRef.get({source:'server'}),legacyFinalRef.get({source:'server'}),getScanItemsRef('WH').where('countResetAt','==',epoch).get({source:'server'})]);
+  const session=_parseSessionSnapshot(sessionDoc);if(!session||(session.countResetAt||'')!==epoch)throw new Error('WH_CONFIRM_DATA_CHANGED');
+  const master=_whValidateMasterDocs(r01Doc,meta104Doc,meta103Doc,{strictTimeline:kind==='count'});
+  if(kind==='recheck'&&!master.r01Data.data_json)throw new Error('WH_R01_MISSING');
+  const pending=pendingDoc.exists?(pendingDoc.data()||{}):{};const legacyFinal=legacyFinalDoc.exists?(legacyFinalDoc.data()||{}):{};
+  const itemData={};itemsSnap.forEach(doc=>{itemData[doc.id]=doc.data()||{};});
+  const skus=new Set([...Object.keys(itemData),...Object.keys(pending)]);const sources={};
+  for(const sku of skus){
+    if((legacyFinal[sku]?.countResetAt||'')===epoch&&legacyFinal[sku]?.confirmedAt)continue;
+    if(kind==='count'&&_getWhCountConfirmation(sku))continue;
+    if(kind==='recheck'&&_getWhRecheckConfirmation(sku))continue;
+    const item=itemData[sku];
+    if(kind==='count'&&item?.status!=='scanning'&&!pending[sku])continue;
+    if(kind==='recheck'&&(item?.status!=='audit'||item?.auditor)&&!pending[sku])continue;
+    const source=_whResolveSource(kind,item,pending[sku],today);if(!source)continue;
+    const who=kind==='count'?(source.scannedBy||'(ไม่ระบุ)'):(source.recheckBy||'(ไม่ระบุ)');if(staffName&&who!==staffName)continue;
+    sources[sku]={source:{...source},rev:item&&source===item?(Number(item.rev)||0):0,
+      fingerprint:_whSourceFingerprint(kind,sku,source,item&&source===item?(Number(item.rev)||0):0)};
+  }
+  return{epoch,today,master,sources,pending,legacyFinal};
+}
+async function _whStageConfirmOperation(kind,staffName,results,versions){
+  const opId=_whNewConfirmOpId(kind);const opRef=getWhConfirmOpsRef().doc(opId);const stagedResults={};
+  for(const[sku,marker]of Object.entries(results))stagedResults[sku]={...marker,opId,kind,sku:String(sku)};
+  const candidateHash=await _whWorkflowHashResults(stagedResults);
+  const createdAt=new Date().toISOString();
+  try{
+    await opRef.set({kind,state:'preparing',countResetAt:_countResetAt||'',staffName:staffName||'',candidateCount:Object.keys(results).length,candidateHash,
+      r01Version:versions.r01Version||'',r16Version:versions.r16Version||'',r16_103Version:versions.r16_103Version||'',owner:currentUser||'',createdAt,committedAt:''});
+    const entries=Object.entries(stagedResults);
+    for(let i=0;i<entries.length;i+=WH_CONFIRM_RESULT_BATCH_SIZE){
+      const batch=_db.batch();for(const[sku,marker]of entries.slice(i,i+WH_CONFIRM_RESULT_BATCH_SIZE))batch.set(opRef.collection('results').doc(sku),marker);await batch.commit();
+    }
+    const verify=await opRef.collection('results').get({source:'server'});const serverResults={};verify.forEach(doc=>serverResults[doc.id]=doc.data()||{});
+    if(Object.keys(serverResults).length!==entries.length||(await _whWorkflowHashResults(serverResults))!==candidateHash)throw new Error('WH_CONFIRM_STAGE_VERIFY_FAILED');
+    return{opId,opRef,candidateHash,results:serverResults};
+  }catch(e){try{await opRef.update({state:'aborted'});}catch(_){}throw e;}
+}
+async function _whPublishConfirmOperation(staged,kind,initial){
+  const epoch=initial.epoch;const entries=Object.entries(staged.results);const committedAt=new Date().toISOString();
+  await _db.runTransaction(async tx=>{
+    const lockRef=getBranchConfirmLockRef('WH');const sessionRef=_db.collection('stock_sessions').doc('WH');
+    const r01Ref=_db.collection('stock_sessions').doc('WH_r01');const pendingRef=kind==='count'?getWhCountInboxRef():getWhRecheckInboxRef();
+    const legacyFinalRef=kind==='count'?getWhCountConfirmationRef():getWhRecheckConfirmationRef();
+    const fixedRefs=[staged.opRef,lockRef,sessionRef,r01Ref,getWhR16MetaRef('104'),getWhR16MetaRef('103'),pendingRef,legacyFinalRef];
+    const snaps=await Promise.all([...fixedRefs.map(ref=>tx.get(ref)),...entries.map(([sku])=>tx.get(getScanItemsRef('WH').doc(sku)))]);
+    const[opDoc,lockDoc,sessionDoc,r01Doc,meta104Doc,meta103Doc,pendingDoc,legacyFinalDoc]=snaps;
+    if(!opDoc.exists||opDoc.data()?.state!=='preparing'||opDoc.data()?.candidateHash!==staged.candidateHash)throw new Error('WH_CONFIRM_DATA_CHANGED');
+    const lock=lockDoc.exists?(lockDoc.data()||{}):{};
+    if(lock.token!==_branchConfirmToken||(lock.countResetAt||'')!==epoch||_branchConfirmLockExpiresMs(lock)<=Date.now())throw new Error('BRANCH_CONFIRM_LOCKED');
+    const session=_parseSessionSnapshot(sessionDoc);if(!session||(session.countResetAt||'')!==epoch)throw new Error('WH_CONFIRM_DATA_CHANGED');
+    const master=_whValidateMasterDocs(r01Doc,meta104Doc,meta103Doc,{strictTimeline:kind==='count'});
+    if(master.r01Version!==initial.master.r01Version||master.r16Version!==initial.master.r16Version||master.r16_103Version!==initial.master.r16_103Version)throw new Error('WH_MASTER_VERSION_MISMATCH:RELOAD');
+    const pending=pendingDoc.exists?(pendingDoc.data()||{}):{};const legacyFinal=legacyFinalDoc.exists?(legacyFinalDoc.data()||{}):{};
+    for(let i=0;i<entries.length;i++){
+      const[sku,marker]=entries[i];
+      if((legacyFinal[sku]?.countResetAt||'')===epoch&&legacyFinal[sku]?.confirmedAt)throw new Error('WH_CONFIRM_DATA_CHANGED');
+      const itemDoc=snaps[fixedRefs.length+i];const item=itemDoc.exists?(itemDoc.data()||{}):null;
+      const source=_whResolveSource(kind,item,pending[sku],initial.today);if(!source)throw new Error('WH_CONFIRM_DATA_CHANGED');
+      const rev=item&&source===item?(Number(item.rev)||0):0;
+      if(_whSourceFingerprint(kind,sku,source,rev)!==marker.sourceFingerprint)throw new Error('WH_CONFIRM_DATA_CHANGED');
+    }
+    tx.update(staged.opRef,{state:'committed',committedAt});
+  });
+  return committedAt;
+}
+async function _whMaterializeCommittedOperation(kind,opId,results){
+  _whConfirmOpsLoadToken++;
+  const committedAt=[..._whCommittedOps.values()].find(op=>op.id===opId)?.committedAt||new Date().toISOString();
+  _whCommittedOps.set(opId,{id:opId,kind,state:'committed',countResetAt:_countResetAt||'',candidateCount:Object.keys(results).length,results,committedAt});
+  const skus=Object.keys(results);for(const[sku,marker]of Object.entries(results)){
+    if(kind==='count')_whCountOpConfirmationData[sku]={...marker,opId,committedAt};else _whRecheckOpConfirmationData[sku]={...marker,opId,committedAt};
+  }
+  _rebuildWhConfirmationData();
+  const changed=kind==='count'?_applyWhCountConfirmationsToState():_applyWhRecheckConfirmationsToState();
+  _renderWhWorkflowStateChanges(kind==='count'?changed:[],kind==='recheck'?changed:[]);
+  try{await _writeConfirmedItems(skus);}catch(e){console.warn('[WH confirm materialize items]',e.message);for(const sku of skus)_markSkuDirty(sku);_scheduleWhCommittedOpsRecovery(1500);return false;}
+  const cleaned=kind==='count'?await _removeWhCountInboxItems(skus):await _removeWhRecheckInboxItems(skus);
+  if(!cleaned)_scheduleWhCommittedOpsRecovery(1500);
+  return cleaned;
+}
+async function _whAbortPreparingOperation(staged){
+  if(!staged?.opRef)return;try{await staged.opRef.update({state:'aborted'});}catch(e){console.warn('[WH confirm abort op]',e.message);}
+}
+async function _whRecoverCommittedOperation(staged,kind){
+  if(!staged?.opRef)return false;
+  try{
+    const doc=await staged.opRef.get({source:'server'});if(!doc.exists||doc.data()?.state!=='committed')return false;
+    await _whMaterializeCommittedOperation(kind,staged.opId,staged.results);return true;
+  }catch(e){console.warn('[WH confirm recover committed]',e.message);return false;}
+}
+
 // Confirm นับครั้งแรก "ทีละพนักงาน" (group key = scannedBy) — มายด์ confirm ของคนที่นับโซนเสร็จได้เลย ไม่ต้องรอครบทุกคน
-// ใช้ transaction อ่าน WH_counts ล่าสุดจาก server แล้วเขียน marker + ลบ pending พร้อมกัน
+// workflow v2 เตรียมผลราย SKU แล้ว publish ทั้งชุดด้วย committed operation; legacy marker อ่านอย่างเดียว
 function _setWhCountConfirming(v){
   _whCountConfirming=!!v;
   const btn=document.getElementById('btnConfirm');if(btn&&currentRole==='supervisor')btn.disabled=_whCountConfirming||!state.r16Loaded||_whR16TimelineLoading;
@@ -4181,86 +4620,56 @@ function _localWhCountCandidates(staffName=null){
   return out;
 }
 async function _confirmWhCountItems(staffName=null,forceDateMismatch=false){
-  if(_whCountConfirming)return;
+  if(_whCountConfirming||_whRecheckConfirming||_branchConfirming)return;
   if(!_db||currentBranch!=='WH'||currentRole!=='supervisor')return;
+  if(!navigator.onLine){toast('ต้องออนไลน์เพื่อยืนยันการนับ','error');return;}
   if(!state.r16Loaded){toast('กรุณาโหลดไฟล์ R16.104 ก่อนยืนยัน','warn');return;}
   if(state.r16DateMismatch&&!forceDateMismatch){document.getElementById('r16MismatchModal').style.display='flex';return;}
   if(!_ensureWhR16TimelineReady())return;
-  const localCandidates=_localWhCountCandidates(staffName);
-  const _todayDate=new Date();const today=`${_todayDate.getFullYear()}-${String(_todayDate.getMonth()+1).padStart(2,'0')}-${String(_todayDate.getDate()).padStart(2,'0')}`;
-  _setWhCountConfirming(true);
+  _setWhCountConfirming(true);_branchConfirming=true;
   document.getElementById('dbStatus').textContent='Confirming...';
+  let token='';let staged=null;let committed=false;
   try{
-    const confirmed=await _db.runTransaction(async tx=>{
-      const pendingRef=getWhCountInboxRef();const confirmationRef=getWhCountConfirmationRef();
-      const r01Ref=_db.collection('stock_sessions').doc('WH_r01');const r16104MetaRef=getWhR16MetaRef('104');const r16103MetaRef=getWhR16MetaRef('103');
-      const[pendingDoc,confirmationDoc,r01Doc,r16104MetaDoc,r16103MetaDoc]=await Promise.all([tx.get(pendingRef),tx.get(confirmationRef),tx.get(r01Ref),tx.get(r16104MetaRef),tx.get(r16103MetaRef)]);
-      if(!r01Doc.exists||!r01Doc.data().r01Version)throw new Error('WH_MASTER_VERSION_MISMATCH:R01_MISSING');
-      const r01Data=r01Doc.data()||{};const serverR01Version=r01Data.r01Version||'';
-      const meta104=r16104MetaDoc.exists?(r16104MetaDoc.data()||{}):{};const meta103=r16103MetaDoc.exists?(r16103MetaDoc.data()||{}):{};
-      const serverR16Version=meta104.ready&&(meta104.countResetAt||'')===(_countResetAt||'')&&(meta104.r01Version||'')===serverR01Version?(meta104.version||''):'';
-      const serverR16103Version=meta103.ready&&(meta103.countResetAt||'')===(_countResetAt||'')&&(meta103.r01Version||'')===serverR01Version?(meta103.version||''):'';
-      if(serverR01Version!==(state.r01Version||'')||!serverR16Version||serverR16Version!==(state.r16DetailVersion||'')||serverR16103Version!==(state.r16_103DetailVersion||'')||!_whR16TimelineReady||(serverR16103Version&&!_whR16103TimelineReady))throw new Error('WH_MASTER_VERSION_MISMATCH:RELOAD');
-      const systemQtyMap=_r01SystemQtyMapFromDocData(r01Data);
-      const pending=pendingDoc.exists?(pendingDoc.data()||{}):{};
-      const existing=confirmationDoc.exists?(confirmationDoc.data()||{}):{};
-      const candidateSkus=new Set(Object.keys(localCandidates));
-      for(const[sku,item]of Object.entries(pending)){
-        if(!item||item.countedQty==null||(item.countResetAt||'')!==(_countResetAt||''))continue;
-        if(item.timestamp&&item.timestamp.substring(0,10)<today)continue;
-        if(staffName&&(item.scannedBy||'(ไม่ระบุ)')!==staffName)continue;
-        candidateSkus.add(sku);
-      }
-      const confirmationPatch={};const pendingPatch={};const result={};
-      const confirmedAt=new Date().toISOString();
-      for(const sku of candidateSkus){
-        const oldMarker=existing[sku];
-        if(oldMarker?.confirmedAt&&(oldMarker.countResetAt||'')===(_countResetAt||'')){
-          result[sku]=oldMarker;pendingPatch[sku]=firebase.firestore.FieldValue.delete();continue;
-        }
-        const localItem=localCandidates[sku];const serverItem=pending[sku];
-        let item=localItem||null;
-        if(serverItem&&serverItem.countedQty!=null&&(serverItem.countResetAt||'')===(_countResetAt||'')&&(!serverItem.timestamp||serverItem.timestamp.substring(0,10)>=today)){
-          if(!item||String(serverItem.countAt||'')>=String(item.countAt||''))item=serverItem;
-        }
-        if(!item||item.countedQty==null)continue;
-        if(staffName&&(item.scannedBy||'(ไม่ระบุ)')!==staffName)continue;
-        const countedQty=Number(item.countedQty);const systemQty=systemQtyMap.get(sku);
-        if(systemQty===undefined||!Number.isFinite(countedQty)||countedQty<0)continue;
-        const soldQty=getSoldQtyBefore(sku,item.timestamp||'');
-        const inboundQty=getInboundQtyBefore(sku,item.timestamp||'');
-        const r16103Qty=getR16103QtyBefore(sku,item.timestamp||'');
-        const effectiveQty=countedQty+soldQty+r16103Qty-inboundQty;
-        const status=effectiveQty===systemQty?'pass':'audit';
-        const marker={status,auditStatus:status==='pass'?'approved':'pending',countedQty,
-          scannedBy:item.scannedBy||'',countAt:item.countAt||'',timestamp:item.timestamp||'',
-          firstScanAt:item.firstScanAt||item.timestamp||'',barcode:item.barcode||'',location:item.location||'',
-          soldQty,inboundQty,r16103Qty,effectiveQty,systemQty,r01Version:serverR01Version,
-          r16Version:serverR16Version,r16_103Version:serverR16103Version,confirmedAt,confirmedBy:currentUser||'',
-          countResetAt:_countResetAt||''};
-        confirmationPatch[sku]=marker;pendingPatch[sku]=firebase.firestore.FieldValue.delete();result[sku]=marker;
-      }
-      if(Object.keys(confirmationPatch).length)tx.set(confirmationRef,confirmationPatch,{merge:true});
-      if(Object.keys(pendingPatch).length)tx.set(pendingRef,pendingPatch,{merge:true});
-      return result;
-    });
-    const items=Object.entries(confirmed||{});
-    if(!items.length){toast(staffName?`ไม่มีรายการที่ ${staffName} นับค้างอยู่`:'ไม่มีรายการรอยืนยัน','warn');return;}
-    _whCountConfirmationData={..._whCountConfirmationData,...confirmed};
-    _renderWhCountConfirmationChanges(_applyWhCountConfirmationsToState());
-    clearTimeout(_firestoreSyncTimer);await syncToFirestore();saveAuditLogToFirestore();
+    _setBranchConfirmProgress('กำลังโหลดผลยืนยันล่าสุด...',0,0);await _requireWhConfirmOpsLoaded({render:true});
+    _setBranchConfirmProgress('กำลังล็อกและพักการสแกนทุกเครื่อง...',0,0);token=await _acquireBranchConfirmLock();
+    await new Promise(resolve=>setTimeout(resolve,3800));
+    await _requireWhConfirmOpsLoaded({render:true});
+    _setBranchConfirmProgress('กำลังอ่านยอดล่าสุดจาก Cloud...',0,0);const initial=await _whReadConfirmSources('count',staffName);
+    const systemQtyMap=_r01SystemQtyMapFromDocData(initial.master.r01Data);const confirmedAt=new Date().toISOString();const confirmed={};
+    const sourceEntries=Object.entries(initial.sources);let done=0;
+    for(const[sku,entry]of sourceEntries){
+      const item=entry.source;const countedQty=Number(item.countedQty);const systemQty=systemQtyMap.get(sku);if(systemQty===undefined)continue;
+      const soldQty=getSoldQtyBefore(sku,item.timestamp||'');const inboundQty=getInboundQtyBefore(sku,item.timestamp||'');const r16103Qty=getR16103QtyBefore(sku,item.timestamp||'');
+      const effectiveQty=countedQty+soldQty+r16103Qty-inboundQty;const status=effectiveQty===systemQty?'pass':'audit';
+      confirmed[sku]={status,auditStatus:status==='pass'?'approved':'pending',countedQty,scannedBy:item.scannedBy||'',countAt:item.countAt||'',
+        timestamp:item.timestamp||'',firstScanAt:item.firstScanAt||item.timestamp||'',barcode:item.barcode||'',location:item.location||'',soldQty,inboundQty,r16103Qty,effectiveQty,systemQty,
+        r01Version:initial.master.r01Version,r16Version:initial.master.r16Version,r16_103Version:initial.master.r16_103Version,confirmedAt,confirmedBy:currentUser||'',
+        countResetAt:initial.epoch,sourceRev:entry.rev,sourceAt:item.countAt||'',sourceFingerprint:entry.fingerprint};
+      done++;if(done%BRANCH_CONFIRM_BATCH_SIZE===0){_setBranchConfirmProgress(`กำลังคำนวณ ${done.toLocaleString()}/${sourceEntries.length.toLocaleString()} รายการ`,done,sourceEntries.length);await _branchConfirmYield();}
+    }
+    const items=Object.entries(confirmed);if(!items.length){toast(staffName?`ไม่มีรายการที่ ${staffName} นับค้างอยู่`:'ไม่มีรายการรอยืนยัน','warn');return;}
+    _setBranchConfirmProgress('กำลังเตรียมผลยืนยันราย SKU...',items.length,items.length);staged=await _whStageConfirmOperation('count',staffName,confirmed,initial.master);
+    await _renewBranchConfirmLock(token);
+    _setBranchConfirmProgress('กำลังตรวจข้อมูลครั้งสุดท้ายและยืนยันทั้งชุด...',items.length,items.length);await _whPublishConfirmOperation(staged,'count',initial);committed=true;
+    const fullyMaterialized=await _whMaterializeCommittedOperation('count',staged.opId,staged.results);
+    saveAuditLogToFirestore();document.getElementById('dbStatus').textContent=fullyMaterialized?'Synced ☁️':'ยืนยันแล้ว · รอเก็บกวาด';
     let nPass=0,nAudit=0;for(const[,m]of items){if(m.status==='pass')nPass++;else if(m.status==='audit')nAudit++;}
     const parts=staffName?[`ยืนยันของ ${staffName}`]:['ยืนยันทั้งหมด'];
     if(nPass)parts.push(`✅ ผ่าน ${nPass}`);if(nAudit)parts.push(`🔍 รีเช็ค ${nAudit}`);
-    toast(parts.join(', '),nAudit?'warn':'success');
+    if(!fullyMaterialized)parts.push('ผลบันทึกแล้ว (กำลัง Sync รายการ)');
+    toast(parts.join(', '),!fullyMaterialized?'warn':nAudit?'warn':'success',5000);
   }catch(e){
-    document.getElementById('dbStatus').textContent='Sync Error';
-    console.warn('[WH count confirm transaction]',e.message);
-    if(String(e.message||'').startsWith('WH_MASTER_VERSION_MISMATCH')){
+    if(!committed&&staged)committed=await _whRecoverCommittedOperation(staged,'count');
+    if(!committed)await _whAbortPreparingOperation(staged);
+    document.getElementById('dbStatus').textContent=committed?'ยืนยันแล้ว · รอ Sync':'Sync Error';console.warn('[WH count confirm operation]',e.code||'',e.message);
+    if(committed)toast('ยืนยันการนับบน Cloud สำเร็จแล้ว แต่การอัปเดตหน้าจอยังไม่ครบ — กรุณารอ Sync ห้ามกดยืนยันซ้ำ','warn',6500);
+    else if(String(e.message||'').startsWith('WH_MASTER_VERSION_MISMATCH')){
       _scheduleWhR16CloudReload();toast('R01/R16 บน Cloud มี version ใหม่หรือยังโหลดไม่ครบ — กรุณารอให้ขึ้น Ready แล้วกด Confirm ใหม่','warn',5500);
-    }else toast('ยืนยันการนับไม่สำเร็จ — ข้อมูลยังไม่ถูกเปลี่ยน กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่','error',4500);
+    }else if(!committed&&['WH_CONFIRM_DATA_CHANGED','BRANCH_CONFIRM_LOCKED'].includes(e.message))toast(e.message==='BRANCH_CONFIRM_LOCKED'?'มี Desktop เครื่องอื่นกำลัง Confirm อยู่':'ข้อมูลเปลี่ยนระหว่างยืนยัน — ยังไม่มีรายการถูกเปลี่ยน กรุณากดใหม่','warn',6000);
+    else if(!committed)toast(`ยืนยันการนับไม่สำเร็จ — ข้อมูลยังไม่ถูกเปลี่ยน${e.code?` (${e.code})`:''}`,'error',5500);
   }finally{
-    _setWhCountConfirming(false);
+    if(token){const released=await _releaseBranchConfirmLock(token);if(released&&_branchConfirmLockData?.token===token)_setBranchScanPaused(false,null);}
+    _branchConfirming=false;_hideBranchConfirmProgress();_setWhCountConfirming(false);
   }
 }
 function confirmCountByStaff(staffName){
@@ -4961,6 +5370,7 @@ function updateInlineQty(sku,v){
 // WH warehouse: แก้จำนวนรีเช็ค audit แบบ inline → เขียน recheckQty (ไม่ใช่ countedQty) + recheckBy
 // persist + sync ขึ้น cloud ให้ supervisor เห็นค่าที่แก้ (เหมือนตอนสแกนรีเช็คผ่าน handleBarcode)
 function updateRecheckInlineQty(sku,v){
+  if(_blockScanForBranchConfirm())return;
   const q=parseFloat(v);if(isNaN(q)||q<0)return;
   const sd=state.scanData.get(sku);if(!sd||sd.status!=='audit')return;
   const qtyChanged=Number(sd.recheckQty)!==q;
@@ -4968,6 +5378,7 @@ function updateRecheckInlineQty(sku,v){
   if(scanListMap.has(sku))scanListMap.get(sku).totalQty=q;
   if(qtyChanged)beepSuccess();
   _writeWhRecheckInboxItem(sku);
+  _markSkuDirty(sku);
   saveSession();
   clearTimeout(_firestoreSyncTimer);
   _firestoreSyncTimer=setTimeout(syncToFirestore,500);
@@ -5062,6 +5473,7 @@ function removeScanItem(sku){
 // warehouse (WH) / เภสัช (สาขายา): รีเซ็ตจำนวนรีเช็คของ audit item กลับเป็นว่าง → สแกนนับใหม่ (status คงเป็น audit)
 // manualEditAt: กัน cloud snapshot เก่าที่ยังถือ recheckQty เดิม mirror กลับมาทับการรีเซ็ต (ดู _applyCloudScanData)
 function resetRecheckItem(sku){
+  if(_blockScanForBranchConfirm())return;
   const sd=state.scanData.get(sku);if(!sd||sd.status!=='audit')return;
   delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;
   sd.manualEditAt=Date.now();
@@ -5338,20 +5750,20 @@ function guideHtml(isWh){
       +'<li>อัพโหลด <strong>R01.102</strong> '+(isWh?'ตอนเริ่มรอบนับ':'ทุกวันก่อน Confirm (หลัง restock)')+'</li>'
       +'<li>สแกนสินค้า</li>'
       +'<li>ก่อนกด Confirm → อัพโหลด <strong>R16.104</strong>'+(isWh?' + <strong>R16.103</strong>':'')+'</li>'
-      +'<li>กด <strong>Confirm</strong> → ระบบประเมินผล</li>'
-      +'<li>'+(isWh?'รายการไม่ตรง → พนักงานรีเช็ค → หัวหน้างานยืนยัน':'Audit (ไม่ตรง) → เภสัชเปิด Audit Verify ตรวจ')+'</li>'
+      +'<li>กด <strong>Confirm</strong> → ระบบตรวจสอบสินค้า</li>'
+      +'<li>'+(isWh?'รายการไม่ตรง → พนักงานรีเช็ค → หัวหน้างานยืนยัน':'Audit (ไม่ตรง) → เภสัช Login PDA สแกนสินค้ารีเช็ค')+'</li>'
     +'</ol>'
   +'</div>'
   +'<div style="background:var(--surface2);padding:9px 12px;border-radius:8px;margin-bottom:8px;border:1px solid var(--border);">'
-    +'<strong style="color:var(--accent);display:block;margin-bottom:5px;">1. R01.102 — จำนวนสินค้า (อัพได้ทุกเวลา)</strong>'
+    +'<strong style="color:var(--accent);display:block;margin-bottom:5px;">1. R01.102 — จำนวนสินค้าคงเหลือตามคลังสินค้า</strong>'
     +'<ul style="padding-left:16px;margin:0;">'
       +'<li>รายงาน R01.102 → สร้างรายงาน → '+(isWh?'เลือก WH':'เลือกสาขา')+' → ติ๊กสินค้าทั้งหมด → ส่งออก .CSV</li>'
       +(isWh
       ?'<li style="margin-top:3px;color:var(--green);font-weight:600;">อัพครั้งเดียวตอนเริ่มรอบ (= baseline systemQty) — ไม่ลบข้อมูลที่นับไว้</li>'
-        +'<li style="margin-top:3px;color:var(--red);">⚠️ ถ้ายังต้องรีเช็ค อย่าอัพ R01 ใหม่ (baseline เลื่อน → รีเช็ค/Confirm เพี้ยน)</li>'
-      :'<li style="margin-top:3px;color:var(--green);font-weight:600;">อัพทุกเช้าวันใหม่ (= baseline หลัง restock)</li>'
-        +'<li style="margin-top:3px;color:var(--orange);">รายการ <strong>Audit ที่เภสัชยังไม่ยืนยัน</strong> คงอยู่ให้เภสัชสแกนรีเช็ค เทียบกับยอดระบบใหม่ได้เลย</li>'
-        +'<li style="margin-top:3px;color:var(--orange);">อัพ R01 แล้ว <strong>R16 เดิมถูกล้าง</strong> — ต้องอัพ R16 ของวันใหม่ก่อนถึงจะ Confirm ได้</li>'
+        +'<li style="margin-top:3px;color:var(--red);">⚠️ ถ้ายังต้องรีเช็ค อย่าอัพ R01 ใหม่ (สินค้าคงเหลือเลื่อน → รีเช็ค/Confirm เพี้ยน)</li>'
+      :'<li style="margin-top:3px;color:var(--green);font-weight:600;">อัพทุกเช้าก่อนเริ่มนับ</li>'
+        +'<li style="margin-top:3px;color:var(--orange);">รายการ <strong>Audit ที่เภสัชยังไม่ยืนยัน</strong> ให้เภสัชสแกนรีเช็ค</li>'
+        +'<li style="margin-top:3px;color:var(--orange);">อัพ R16 ก่อนกด Confirm <strong>R16 ต้องดึงรายงานจากแอพม่วงล่าสุดเท่านั้น</strong> → อัพ R16 ของวันใหม่ก่อนถึงจะ Confirm ได้</li>'
         +'<li style="margin-top:3px;">หลังอัพ R01 → สแกนนับ → อัพ R16 เย็น → Confirm</li>')
     +'</ul>'
   +'</div>'
@@ -5479,7 +5891,7 @@ function toggleAdmin(){
     _adminMode=false;
     applyAdminUI();
     toast('ออกจากโหมด Administrator — กำลัง sync ข้อมูลขึ้น Cloud...','info');
-    syncToFirestore().then(()=>{startScanSessionListener();startWhCountConfirmationListener();startWhCountInboxListener();startWhRecheckConfirmationListener();startWhRecheckInboxListener();startBranchConfirmLockListener();startPharmacyAuditMarkerListener();});
+    syncToFirestore().then(()=>{startScanSessionListener();startWhCountConfirmationListener();startWhCountInboxListener();startWhRecheckConfirmationListener();startWhRecheckInboxListener();startWhConfirmOpsListener();startBranchConfirmLockListener();startPharmacyAuditMarkerListener();});
     return;
   }
   const pin=prompt('🔒 กรุณาใส่รหัส PIN เพื่อเข้าโหมด Administrator:');
@@ -5493,6 +5905,7 @@ function toggleAdmin(){
   stopWhCountInboxListener();
   stopWhRecheckConfirmationListener();
   stopWhRecheckInboxListener();
+  stopWhConfirmOpsListener();
   applyAdminUI();
   toast('เข้าโหมด Administrator (ไม่ sync Firestore)','success');
 }
@@ -5831,11 +6244,14 @@ async function _loadScanItemsFromCloud(){
   snap.forEach(doc=>{
     const data=doc.data();if(!data)return;
     const sku=doc.id;
+    const whOpId=currentBranch==='WH'&&(data.whRecheckOpId||data.whCountOpId);
+    if(whOpId&&!_whCommittedOps.has(whOpId))return;
     state.scanData.set(sku,_scanItemToLocal(data,state.scanData.get(sku)));
     _scanItemRev.set(sku,Number(data.rev)||0);
     _scanItemSynced.set(sku,_scanItemFingerprint(state.scanData.get(sku)));
     if(data.status==='scanning')scanned++;
   });
+  if(currentBranch==='WH'){_applyWhCountConfirmationsToState();_applyWhRecheckConfirmationsToState();}
   return scanned;
 }
 // ลบ items ของ epoch ที่ระบุ — ใช้ตอนเริ่มนับใหม่/ล้างข้อมูล
@@ -5869,6 +6285,24 @@ async function _deleteAllScanItems(){
     deleted+=snap.size;
     if(snap.size<SCAN_ITEM_BATCH_SIZE)break;
   }
+  return deleted;
+}
+async function _deleteWhConfirmOpDocument(opDoc){
+  const resultsRef=opDoc.ref.collection('results');let deleted=0;
+  for(;;){
+    const snap=await resultsRef.limit(SCAN_ITEM_BATCH_SIZE).get();if(snap.empty)break;
+    const batch=_db.batch();snap.forEach(doc=>batch.delete(doc.ref));await batch.commit();deleted+=snap.size;
+    if(snap.size<SCAN_ITEM_BATCH_SIZE)break;
+  }
+  await opDoc.ref.delete();return deleted+1;
+}
+async function _deleteWhConfirmOpsForEpoch(epoch){
+  if(!_db)return 0;const snap=await getWhConfirmOpsRef().where('countResetAt','==',epoch||'').get();let deleted=0;
+  for(const opDoc of snap.docs)deleted+=await _deleteWhConfirmOpDocument(opDoc);return deleted;
+}
+async function _deleteAllWhConfirmOps(){
+  if(!_db)return 0;let deleted=0;
+  for(;;){const snap=await getWhConfirmOpsRef().limit(25).get();if(snap.empty)break;for(const opDoc of snap.docs)deleted+=await _deleteWhConfirmOpDocument(opDoc);if(snap.size<25)break;}
   return deleted;
 }
 // ─── Live migration: blob → items โดยไม่ทิ้งของที่นับค้างไว้ ────────────────────────────────
@@ -6396,74 +6830,49 @@ function _localWhRecheckCandidates(staffName=null){
 }
 // ยืนยัน WH recheck ผ่าน transaction: อ่าน pending ล่าสุดจาก server แล้วเขียน marker + ลบ pending พร้อมกัน
 async function _confirmWhRecheckItems(staffName=null){
-  if(_whRecheckConfirming)return;
+  if(_whRecheckConfirming||_whCountConfirming||_branchConfirming)return;
   if(!_db||currentBranch!=='WH'||currentRole!=='supervisor')return;
-  const localCandidates=_localWhRecheckCandidates(staffName);
-  _setWhRecheckConfirming(true);
+  if(!navigator.onLine){toast('ต้องออนไลน์เพื่อยืนยันรีเช็ค','error');return;}
+  _setWhRecheckConfirming(true);_branchConfirming=true;
   document.getElementById('dbStatus').textContent='Confirming...';
+  let token='';let staged=null;let committed=false;
   try{
-    const confirmed=await _db.runTransaction(async tx=>{
-      const pendingRef=getWhRecheckInboxRef();const confirmationRef=getWhRecheckConfirmationRef();
-      const r01Ref=_db.collection('stock_sessions').doc('WH_r01');const r16104MetaRef=getWhR16MetaRef('104');const r16103MetaRef=getWhR16MetaRef('103');
-      const[pendingDoc,confirmationDoc,r01Doc,r16104MetaDoc,r16103MetaDoc]=await Promise.all([tx.get(pendingRef),tx.get(confirmationRef),tx.get(r01Ref),tx.get(r16104MetaRef),tx.get(r16103MetaRef)]);
-      if(!r01Doc.exists||!r01Doc.data().data_json)throw new Error('WH_R01_MISSING');
-      const r01Data=r01Doc.data()||{};const systemQtyMap=_r01SystemQtyMapFromDocData(r01Data);
-      const meta104=r16104MetaDoc.exists?(r16104MetaDoc.data()||{}):{};const meta103=r16103MetaDoc.exists?(r16103MetaDoc.data()||{}):{};
-      const serverR16Version=meta104.ready&&(meta104.countResetAt||'')===(_countResetAt||'')&&(meta104.r01Version||'')===(r01Data.r01Version||'')?(meta104.version||''):'';
-      const serverR16103Version=meta103.ready&&(meta103.countResetAt||'')===(_countResetAt||'')&&(meta103.r01Version||'')===(r01Data.r01Version||'')?(meta103.version||''):'';
-      const pending=pendingDoc.exists?(pendingDoc.data()||{}):{};
-      const existing=confirmationDoc.exists?(confirmationDoc.data()||{}):{};
-      const candidateSkus=new Set(Object.keys(localCandidates));
-      for(const[sku,item]of Object.entries(pending)){
-        if(!item||item.recheckQty==null||(item.countResetAt||'')!==(_countResetAt||''))continue;
-        if(staffName&&(item.recheckBy||'(ไม่ระบุ)')!==staffName)continue;
-        candidateSkus.add(sku);
-      }
-      const confirmationPatch={};const pendingPatch={};const result={};
-      const _d=new Date();
-      const confirmedAt=_d.toISOString();
-      const ts=`${_d.getFullYear()}-${String(_d.getMonth()+1).padStart(2,'0')}-${String(_d.getDate()).padStart(2,'0')} ${String(_d.getHours()).padStart(2,'0')}:${String(_d.getMinutes()).padStart(2,'0')}:${String(_d.getSeconds()).padStart(2,'0')}`;
-      for(const sku of candidateSkus){
-        const oldMarker=existing[sku];
-        if(oldMarker?.confirmedAt&&(oldMarker.countResetAt||'')===(_countResetAt||'')){
-          result[sku]=oldMarker;pendingPatch[sku]=firebase.firestore.FieldValue.delete();continue;
-        }
-        const localItem=localCandidates[sku];const serverItem=pending[sku];
-        let item=localItem||null;
-        if(serverItem&&serverItem.recheckQty!=null&&(serverItem.countResetAt||'')===(_countResetAt||'')){
-          if(!item||String(serverItem.recheckAt||'')>=String(item.recheckAt||''))item=serverItem;
-        }
-        if(!item||item.recheckQty==null)continue;
-        if(staffName&&(item.recheckBy||'(ไม่ระบุ)')!==staffName)continue;
-        const rq=Number(item.recheckQty);const systemQty=systemQtyMap.get(sku);
-        if(systemQty===undefined||!Number.isFinite(rq)||rq<0)continue;
-        const status=rq===systemQty?'pass':'stock_adjustment';
-        const marker={status,auditStatus:status==='pass'?'approved':'stock_adjustment',
-          auditor:currentUser||'',confirmedAt,timestamp:ts,recheckQty:rq,
-          recheckBy:item.recheckBy||'',recheckAt:item.recheckAt||'',systemQty,
-          r01Version:r01Data.r01Version||'',r16Version:serverR16Version,r16_103Version:serverR16103Version,
-          countResetAt:_countResetAt||''};
-        confirmationPatch[sku]=marker;pendingPatch[sku]=firebase.firestore.FieldValue.delete();result[sku]=marker;
-      }
-      if(Object.keys(confirmationPatch).length)tx.set(confirmationRef,confirmationPatch,{merge:true});
-      if(Object.keys(pendingPatch).length)tx.set(pendingRef,pendingPatch,{merge:true});
-      return result;
-    });
+    _setBranchConfirmProgress('กำลังโหลดผลยืนยันล่าสุด...',0,0);await _requireWhConfirmOpsLoaded({render:true});
+    _setBranchConfirmProgress('กำลังล็อกและพักการสแกนทุกเครื่อง...',0,0);token=await _acquireBranchConfirmLock();
+    await new Promise(resolve=>setTimeout(resolve,3800));
+    await _requireWhConfirmOpsLoaded({render:true});
+    _setBranchConfirmProgress('กำลังอ่านยอดรีเช็คล่าสุดจาก Cloud...',0,0);const initial=await _whReadConfirmSources('recheck',staffName);
+    const systemQtyMap=_r01SystemQtyMapFromDocData(initial.master.r01Data);const d=new Date();const confirmedAt=d.toISOString();
+    const ts=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+    const confirmed={};for(const[sku,entry]of Object.entries(initial.sources)){
+      const item=entry.source;const rq=Number(item.recheckQty);const systemQty=systemQtyMap.get(sku);if(systemQty===undefined)continue;
+      const status=rq===systemQty?'pass':'stock_adjustment';confirmed[sku]={status,auditStatus:status==='pass'?'approved':'stock_adjustment',auditor:currentUser||'',confirmedAt,timestamp:ts,
+        recheckQty:rq,recheckBy:item.recheckBy||'',recheckAt:item.recheckAt||'',systemQty,r01Version:initial.master.r01Version,r16Version:initial.master.r16Version,
+        r16_103Version:initial.master.r16_103Version,countResetAt:initial.epoch,sourceRev:entry.rev,sourceAt:item.recheckAt||'',sourceFingerprint:entry.fingerprint};
+    }
     const items=Object.entries(confirmed||{});
     if(!items.length){toast(staffName?`ไม่มีรายการรีเช็คของ ${staffName}`:'ยังไม่มีรายการที่รีเช็ค','warn');return;}
-    _whRecheckConfirmationData={..._whRecheckConfirmationData,...confirmed};
-    _renderWhRecheckConfirmationChanges(_applyWhRecheckConfirmationsToState());
-    await syncToFirestore();saveAuditLogToFirestore();
+    _setBranchConfirmProgress('กำลังเตรียมผลรีเช็คราย SKU...',items.length,items.length);staged=await _whStageConfirmOperation('recheck',staffName,confirmed,initial.master);
+    await _renewBranchConfirmLock(token);
+    _setBranchConfirmProgress('กำลังตรวจข้อมูลครั้งสุดท้ายและยืนยันทั้งชุด...',items.length,items.length);await _whPublishConfirmOperation(staged,'recheck',initial);committed=true;
+    const fullyMaterialized=await _whMaterializeCommittedOperation('recheck',staged.opId,staged.results);
+    saveAuditLogToFirestore();document.getElementById('dbStatus').textContent=fullyMaterialized?'Synced ☁️':'ยืนยันแล้ว · รอเก็บกวาด';
     let nPass=0,nAdj=0;for(const[,m]of items){if(m.status==='pass')nPass++;else if(m.status==='stock_adjustment')nAdj++;}
     const parts=staffName?[`ยืนยันของ ${staffName}`]:[];
     if(nPass)parts.push(`✅ ผ่าน ${nPass}`);if(nAdj)parts.push(`⚠️ ปรับสต็อก ${nAdj}`);
-    toast(parts.join(', '),nAdj?'warn':'success');
+    if(!fullyMaterialized)parts.push('ผลบันทึกแล้ว (กำลัง Sync รายการ)');
+    toast(parts.join(', '),!fullyMaterialized?'warn':nAdj?'warn':'success',5000);
   }catch(e){
-    document.getElementById('dbStatus').textContent='Sync Error';
-    console.warn('[WH recheck confirm transaction]',e.message);
-    toast('ยืนยันรีเช็คไม่สำเร็จ — ข้อมูลยังไม่ถูกเปลี่ยน กรุณาตรวจอินเทอร์เน็ตแล้วลองใหม่','error',4500);
+    if(!committed&&staged)committed=await _whRecoverCommittedOperation(staged,'recheck');
+    if(!committed)await _whAbortPreparingOperation(staged);
+    document.getElementById('dbStatus').textContent=committed?'ยืนยันแล้ว · รอ Sync':'Sync Error';console.warn('[WH recheck confirm operation]',e.code||'',e.message);
+    if(committed)toast('ยืนยันรีเช็คบน Cloud สำเร็จแล้ว แต่การอัปเดตหน้าจอยังไม่ครบ — กรุณารอ Sync ห้ามกดยืนยันซ้ำ','warn',6500);
+    else if(String(e.message||'').startsWith('WH_MASTER_VERSION_MISMATCH')||e.message==='WH_R01_MISSING')toast('R01/R16 บน Cloud เปลี่ยนหรือโหลดไม่ครบ — กรุณารอ Sync แล้วกดใหม่','warn',5500);
+    else if(['WH_CONFIRM_DATA_CHANGED','BRANCH_CONFIRM_LOCKED'].includes(e.message))toast(e.message==='BRANCH_CONFIRM_LOCKED'?'มี Desktop เครื่องอื่นกำลัง Confirm อยู่':'ข้อมูลเปลี่ยนระหว่างยืนยัน — ยังไม่มีรายการถูกเปลี่ยน กรุณากดใหม่','warn',6000);
+    else toast(`ยืนยันรีเช็คไม่สำเร็จ — ข้อมูลยังไม่ถูกเปลี่ยน${e.code?` (${e.code})`:''}`,'error',5500);
   }finally{
-    _setWhRecheckConfirming(false);
+    if(token){const released=await _releaseBranchConfirmLock(token);if(released&&_branchConfirmLockData?.token===token)_setBranchScanPaused(false,null);}
+    _branchConfirming=false;_hideBranchConfirmProgress();_setWhRecheckConfirming(false);
   }
 }
 
@@ -6824,6 +7233,15 @@ function _dashboardReadError(branch,source,e){
   err.cause=e;
   return err;
 }
+function _overlayWhDashboardMarker(items,sku,marker,kind,epoch){
+  if(!marker||!marker.confirmedAt||(marker.countResetAt||'')!==epoch)return;
+  if(kind==='count'&&!['pass','audit','stock_adjustment'].includes(marker.status))return;
+  if(kind==='recheck'&&!['pass','stock_adjustment'].includes(marker.status))return;
+  const existing=items[sku]||{sku:String(sku),countResetAt:epoch};
+  items[sku]={...existing,...marker,sku:String(sku),countResetAt:epoch};
+  if(kind==='count')items[sku].initialStatus=marker.status;
+  if(marker.opId)items[sku][kind==='count'?'whCountOpId':'whRecheckOpId']=marker.opId;
+}
 async function _loadDashboardItemsForBranch(branch,sessionDoc){
   if(!sessionDoc||!sessionDoc.exists)return null;
   const raw=sessionDoc.data()||{};
@@ -6834,9 +7252,21 @@ async function _loadDashboardItemsForBranch(branch,sessionDoc){
   try{
     // Dashboard ต้องอ่านเฉพาะรอบนับปัจจุบัน ห้ามรวม item เก่าคนละ countResetAt
     // และใช้ server โดยตรง เพื่อไม่แสดงยอด cache เก่าเป็นยอดล่าสุด
-    const snap=await getScanItemsRef(branch).where('countResetAt','==',epoch).get({source:'server'});
+    const reads=[getScanItemsRef(branch).where('countResetAt','==',epoch).get({source:'server'})];
+    if(branch==='WH')reads.push(getWhCountConfirmationRef().get({source:'server'}),getWhRecheckConfirmationRef().get({source:'server'}),
+      getWhConfirmOpsRef().where('countResetAt','==',epoch).get({source:'server'}));
+    const[snap,legacyCountDoc,legacyRecheckDoc,opsSnap]=await Promise.all(reads);
     const items={};
     snap.forEach(doc=>{items[doc.id]=doc.data();});
+    if(branch==='WH'){
+      const legacyCount=legacyCountDoc.exists?(legacyCountDoc.data()||{}):{};
+      const legacyRecheck=legacyRecheckDoc.exists?(legacyRecheckDoc.data()||{}):{};
+      for(const[sku,marker]of Object.entries(legacyCount))_overlayWhDashboardMarker(items,sku,marker,'count',epoch);
+      const ops=await _readVerifiedWhCommittedOps(opsSnap,epoch);
+      for(const op of ops)if(op.kind==='count')for(const[sku,marker]of Object.entries(op.results))_overlayWhDashboardMarker(items,sku,marker,'count',epoch);
+      for(const[sku,marker]of Object.entries(legacyRecheck))_overlayWhDashboardMarker(items,sku,marker,'recheck',epoch);
+      for(const op of ops)if(op.kind==='recheck')for(const[sku,marker]of Object.entries(op.results))_overlayWhDashboardMarker(items,sku,marker,'recheck',epoch);
+    }
     return items;
   }catch(e){throw _dashboardReadError(branch,'items รอบปัจจุบัน',e);}
 }

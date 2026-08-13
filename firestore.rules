@@ -15,17 +15,132 @@ service cloud.firestore {
         || (nextVersion is number && nextVersion >= currentVersion);
     }
 
+    // WH workflow v2 materialize final provenance ลง items/{sku}.
+    // PDA เก่าที่กลับมาออนไลน์อาจส่ง audit/scanning snapshot แบบ replace ทั้ง document;
+    // ใน epoch เดียวกันจึงห้าม update ลบหรือเปลี่ยน op id ที่ติดตั้งแล้ว.
+    // branch อื่น, epoch ใหม่, create และ delete คง behavior เดิมตาม rollout contract.
+    function preservesWhWorkflowOpIds(branch) {
+      let sameWhEpoch = branch == 'WH'
+        && resource.data.get('countResetAt', '') == request.resource.data.get('countResetAt', '');
+      let newerWhEpoch = branch == 'WH'
+        && request.resource.data.get('countResetAt', '') is string
+        && request.resource.data.get('countResetAt', '') > resource.data.get('countResetAt', '');
+      let keepsCountOp = !('whCountOpId' in resource.data)
+        || (('whCountOpId' in request.resource.data)
+          && request.resource.data.whCountOpId == resource.data.whCountOpId);
+      let keepsRecheckOp = !('whRecheckOpId' in resource.data)
+        || (('whRecheckOpId' in request.resource.data)
+          && request.resource.data.whRecheckOpId == resource.data.whRecheckOpId);
+      return branch != 'WH' || newerWhEpoch || (sameWhEpoch && keepsCountOp && keepsRecheckOp);
+    }
+
+    function isWhLegacyFinalDocument(document) {
+      return document == 'WH_count_confirmations'
+        || document == 'WH_recheck_confirmations';
+    }
+
+    // Operation publish เป็น monotonic state machine: create ได้เฉพาะ preparing และ
+    // update ได้ครั้งเดียวไป committed/aborted โดยห้ามแก้ contract ของ operation.
+    // Parent/result ยัง delete ได้เพื่อให้ startNewCount cleanup ทำงาน.
+    function validWhConfirmOpCreate() {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+          'kind', 'state', 'countResetAt', 'staffName', 'candidateCount',
+          'candidateHash', 'r01Version', 'r16Version', 'r16_103Version',
+          'owner', 'createdAt', 'committedAt'
+        ])
+        && (data.kind == 'count' || data.kind == 'recheck')
+        && data.state == 'preparing'
+        && data.countResetAt is string
+        && data.candidateCount is int
+        && data.candidateCount >= 0
+        && data.candidateHash is string
+        && data.r01Version is string
+        && data.r16Version is string
+        && data.r16_103Version is string
+        && data.owner is string
+        && data.createdAt is string
+        && (data.staffName == null || data.staffName is string)
+        && (data.committedAt == null || data.committedAt == '');
+    }
+
+    function preservesWhConfirmOpContract() {
+      return request.resource.data.kind == resource.data.kind
+        && request.resource.data.countResetAt == resource.data.countResetAt
+        && request.resource.data.staffName == resource.data.staffName
+        && request.resource.data.candidateCount == resource.data.candidateCount
+        && request.resource.data.candidateHash == resource.data.candidateHash
+        && request.resource.data.r01Version == resource.data.r01Version
+        && request.resource.data.r16Version == resource.data.r16Version
+        && request.resource.data.r16_103Version == resource.data.r16_103Version
+        && request.resource.data.owner == resource.data.owner
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function validWhConfirmOpTransition() {
+      let currentState = resource.data.get('state', '');
+      let nextState = request.resource.data.get('state', '');
+      return currentState == 'preparing'
+        && (nextState == 'committed' || nextState == 'aborted')
+        && preservesWhConfirmOpContract()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['state', 'committedAt'])
+        && (
+          (nextState == 'committed'
+            && request.resource.data.committedAt is string
+            && request.resource.data.committedAt != '')
+          || (nextState == 'aborted'
+            && request.resource.data.committedAt == resource.data.committedAt)
+        );
+    }
+
+    // Result เขียนได้เฉพาะระหว่างที่ parent ยัง preparing และ identity ทุก field
+    // ต้องผูกกับทั้ง path และ parent operation เดียวกัน เพื่อกัน orphan/mixed-epoch result.
+    function validWhConfirmResultCreate(opId, sku) {
+      let opPath = /databases/$(database)/documents/stock_sessions/WH/confirm_ops/$(opId);
+      let data = request.resource.data;
+      return exists(opPath)
+        && get(opPath).data.state == 'preparing'
+        && data.keys().hasAll(['opId', 'kind', 'sku', 'countResetAt'])
+        && data.opId == opId
+        && data.kind == get(opPath).data.kind
+        && data.sku == sku
+        && data.countResetAt == get(opPath).data.countResetAt;
+    }
+
     // แยก parent ออกจาก subcollection โดยตั้งใจ:
     // ห้ามใส่ recursive allow {document=**} กลับมา เพราะ allow ที่ match ซ้อนกันใช้แบบ OR
     // แล้วจะข้าม schema guard ด้านล่างทันที
     match /stock_sessions/{document} {
-      allow read, create, delete: if true;
-      allow update: if preservesScanSchemaVersion();
+      allow read, delete: if true;
+      // Legacy WH final maps เป็น compatibility/forensic read-only หลัง workflow v2 cutover.
+      // ต้อง exclude จาก generic allow ตรงนี้ เพราะ rules ที่ match ซ้อนกันใช้แบบ OR.
+      allow create: if !isWhLegacyFinalDocument(document);
+      allow update: if !isWhLegacyFinalDocument(document)
+        && preservesScanSchemaVersion();
     }
 
-    // schema v2: 1 document ต่อ SKU — สิทธิ์ read/write คงเดิม
+    // schema v2: 1 document ต่อ SKU — WH same-epoch final provenance เดินหน้าอย่างเดียว
     match /stock_sessions/{branch}/items/{sku} {
-      allow read, write: if true;
+      allow read, create, delete: if true;
+      allow update: if preservesWhWorkflowOpIds(branch);
+    }
+
+    // WH workflow v2: ผล Count/Recheck ต่อ SKU ถูกเตรียมเป็นชุด แล้ว publish
+    // ด้วยการเปลี่ยน state ของ operation เป็น `committed` เพียงจุดเดียว
+    // แยก match ทั้ง op และ results โดยตั้งใจ — parent match ด้านบนไม่ครอบ subcollection
+    // op publish เดินหน้าอย่างเดียวและ result เป็น immutable; delete ยังเปิดไว้สำหรับ cleanup.
+    // materialized item มี guard แยกด้านบนเพื่อกัน delayed old-client update ลบ provenance.
+    match /stock_sessions/WH/confirm_ops/{opId} {
+      allow read, delete: if true;
+      allow create: if validWhConfirmOpCreate();
+      allow update: if validWhConfirmOpTransition();
+    }
+
+    match /stock_sessions/WH/confirm_ops/{opId}/results/{sku} {
+      allow read, delete: if true;
+      allow create: if validWhConfirmResultCreate(opId, sku);
+      allow update: if false;
     }
 
     match /stock_audit_log/{document} {

@@ -96,10 +96,10 @@ effectiveQty = countedQty + soldQty + r16103Qty - inboundQty
 | `{branch}_r01` | R01 master/version และ R16 metadata ของสาขา |
 | `global_pm` | Product Master |
 | `global_r05` | Barcode master R05 |
-| `WH_counts` | inbox จำนวนรอบแรกจาก WH PDA |
-| `WH_count_confirmations` | authoritative marker หลัง Supervisor Confirm Count |
-| `WH_rechecks` | inbox จำนวน Recheck จาก WH PDA |
-| `WH_recheck_confirmations` | authoritative marker หลัง Supervisor Confirm Recheck |
+| `WH/confirm_ops/{opId}` | WH workflow v2 operation; authoritative เมื่อ `state==='committed'` เท่านั้น |
+| `WH/confirm_ops/{opId}/results/{sku}` | ผล Count/Recheck ต่อ SKU ของ operation นั้น |
+| `WH_counts`, `WH_rechecks` | legacy inbox ระหว่าง compatibility; live state ใหม่อยู่ที่ `WH/items/{sku}` |
+| `WH_count_confirmations`, `WH_recheck_confirmations` | legacy final markers สำหรับ migration/dual-read เท่านั้น ห้ามเพิ่ม final ใหม่ |
 | `WH_r16_104_meta`, `WH_r16_103_meta` | active R16 timeline generation/version |
 | `WH_r16_{kind}_{generation}_{index}` | versioned R16 timeline chunks |
 | `{branch}_confirm_lock` | lock ชั่วคราวระหว่าง Pharmacy Desktop Confirm |
@@ -110,22 +110,26 @@ Precedence ของ WH Supervisor ต้องคงเป็น:
 
 ```text
 R01/R16 master
-→ session base
-→ Count confirmation marker
-→ WH_counts
-→ Recheck confirmation marker
-→ WH_rechecks
+→ WH/items base
+→ Count final (committed op หรือ legacy marker ระหว่าง compatibility)
+→ Count pending เฉพาะเมื่อยังไม่มี final
+→ Recheck final (ชนะ Count audit)
+→ Recheck pending เฉพาะเมื่อยังไม่มี Recheck final
 ```
 
 ข้อบังคับ:
 
-- marker ใน `countResetAt` เดียวกันชนะ session snapshot และ inbox เก่าเสมอ
+- เฉพาะ parent op ที่ `state==='committed'` และมี results ครบตาม `candidateCount`/`candidateHash` เท่านั้นที่เป็น authoritative; `preparing`/`aborted` ต้องไม่มีผลต่อ state
+- committed result ใน `countResetAt` เดียวกันชนะ item snapshot และ legacy inbox/marker ที่มาช้าเสมอ
+- Rules ต้องกัน same-epoch update ของ `WH/items/{sku}` ไม่ให้ลบ/เปลี่ยน `whCountOpId` หรือ `whRecheckOpId` ที่ materialize แล้ว; branch อื่น, epoch ใหม่, create/delete ไม่เปลี่ยนพฤติกรรม
 - สาขายาให้ `{branch}_pharmacy_audit_markers` ชนะ session/local ทุกเครื่อง; Audit ที่อยู่ใน marker ห้ามถูก Pass เก่าหรือ SKU ที่หายจาก session กลบ
 - marker ของสาขายาเก็บ Audit ที่รอ verify, ผลที่เภสัชยืนยันแล้ว และ resolution จาก R16 re-calculation; เขียนด้วย transaction และผูก `countResetAt`
 - Recheck marker ต้องชนะ Count marker ที่ยังเป็น `audit`
 - `audit` เก่าที่ไม่มี `auditor` ห้ามทับผล `pass`/`stock_adjustment` ที่ Supervisor ยืนยันแล้ว
-- ห้ามทำ Firestore delete แบบ fire-and-forget ใน confirmation flow ที่ต้อง atomic
-- Count/Recheck confirmation ต้องเปลี่ยน local state หลัง transaction สำเร็จเท่านั้น
+- WH Confirm เขียน results ขณะ op เป็น `preparing`, verify server count/hash แล้ว publish ทั้งชุดด้วย transaction ที่เปลี่ยน parent เป็น `committed` เพียงจุดเดียว; ห้ามให้ reader เห็นผลระหว่างเตรียม
+- Rules ต้องบังคับ results เป็น immutable (create-once; update ไม่ได้) และ op update ได้เฉพาะ `preparing → preparing|committed|aborted`; committed/aborted ห้ามย้อน ส่วน delete คงไว้สำหรับ cleanup รอบนับ
+- การ materialize ลง `WH/items/{sku}` และล้าง legacy pending หลัง commit ต้อง idempotent และทำต่อจาก committed results ได้ ห้ามคำนวณผลใหม่หรือถือว่าความล้มเหลวกลาง chunk คือ rollback
+- ห้ามทำ Firestore delete แบบ fire-and-forget ใน confirmation flow ที่ต้อง atomic; local state เปลี่ยนได้หลัง committed transaction และ full-result verification สำเร็จเท่านั้น
 - R01/R16 version ไม่ตรงหรือ Supervisor ออฟไลน์ต้อง abort โดยไม่เปลี่ยนสถานะบางส่วน
 - ห้าม simplify `_applyCloudScanData()` หรือ `syncToFirestore()` โดยไม่ตรวจ race ระหว่าง local edit, session listener, inbox และ marker
 
@@ -157,6 +161,7 @@ R01/R16 master
 - UI/state: `appendScanRow`, `removeScanItem`, `resetRecheckItem`, `rebuildScanListMap`, `renderScanList`, `patchScanRow`
 - Cloud: `_applyCloudScanData`, `syncToFirestore`, `pullFromCloud`, session/inbox/marker listeners และ restore/backfill
 - Audit/Recheck: Audit Verify, Count Confirm, Recheck Confirm และ role/status filters
+- WH workflow v2: `confirm_ops`/`results` reader-listener, prepare/commit/materialize/recovery, legacy dual-read และ migration/cleanup ทุกจุด
 
 อย่าลบ `_scanGapHold` guards หรือ dead gap-modal code แบบแยกส่วน แม้ 2-minute reset ถูกยกเลิกแล้ว เพราะ guards ยังผูกกับ `_zeroSysHold` และ queue runtime
 
@@ -187,6 +192,7 @@ R01/R16 master
 | (ก.ค. 2026) | สาขายา Desktop/PDA คนละเครื่องเห็น SKU เดียวกันเป็น Audit/Pass ไม่ตรงกัน และ Audit อาจหายจาก session | Pharmacy Audit marker ต้องเป็น source of truth, listener ต้อง overlay หลัง session ทุกครั้ง, marker-backed SKU ที่หายต้องซ่อมกลับ session และ rollout migration อ่าน Audit Log ตาม epoch |
 
 | (ก.ค. 2026) | session blob ชนเพดาน 1 MiB ของ Firestore เมื่อนับครบทั้งสาขา (~1.6 MB) แล้ว `ref.set()` throw โดยโชว์แค่ `'Sync Error'` — ข้อมูลนับหายเงียบ | `scanData` ต้องอยู่ใน `{branch}/items/{sku}` (schema v2); `_reportSyncError()` ต้องรายงานกรณีเกินขนาดให้ชัดแทน throw เงียบ; ห้าม dual-write blob+items |
+| (ส.ค. 2026) | `WH_count_confirmations` เก็บ SKU เป็น dynamic map จนชนเพดาน 40,000 index entries ที่ 873 markers ทำให้ Supervisor Confirm ต่อไม่ได้ ทั้งที่ document ยังไม่ถึง 1 MiB | ห้ามเพิ่ม final ลง legacy map; ใช้ `WH/confirm_ops/{opId}/results/{sku}` และ atomic committed pointer, เก็บ legacy read-only ระหว่าง migration และ roll-forward หลังมี post-cutover commit |
 
 Schema v2 — invariant ที่ห้ามทำให้ย้อนกลับ (รายละเอียดเต็ม + งานที่ยังค้างอยู่ที่ `CLAUDE.md` §Scan data schema v2):
 
@@ -198,7 +204,7 @@ Schema v2 — invariant ที่ห้ามทำให้ย้อนกล�
 - `_scanItemToLocal()` ต้องคง `scans`/`retries`/`manualEditAt` ของเครื่องเดิม — `scans` ถูกอ่านโดย `_zeroSysFirstScan`
 - `manualEditAt` สด = เขียนทับตรงๆ ไม่ใช่ delta
 - ไม่เขียน doc สำหรับ `pending` (ไม่มี doc = `pending`)
-- `firestore.rules` ต้องเป็น `{document=**}` และต้อง Publish ก่อน deploy เว็บ; composite index `countResetAt`+`status` ต้องสร้างก่อน cutover
+- `firestore.rules` ต้องแยก parent `stock_sessions/{document}` ออกจาก subcollections (`{branch}/items/{sku}`, `WH/confirm_ops/{opId}`, `results/{sku}`) และห้าม recursive broad allow `{document=**}` เพราะจะข้าม schema guard; ต้อง Publish Rules ก่อน deploy เว็บ และสร้าง composite index `countResetAt`+`status` ก่อน scan schema cutover
 - `_checkSessionBlobSize()` **ห้ามกลับไป block การเขียน** — block เองจะทำให้ payload ที่ Firestore ยังรับได้เขียนไม่ผ่าน และทำ branch lock ค้าง
 - `migrateSessionToSchemaV2()` ต้องคงลำดับ: สำรอง → เขียน items → **verify จำนวนจาก server** → ค่อยเขียน session doc เป็น metadata-only
   ห้ามเขียน session doc ก่อน verify เด็ดขาด เพราะนั่นคือจุดที่ `scanData` เดิมหายไป
@@ -238,6 +244,8 @@ Git safety:
 
 - ระบบยังรอ UAT จริงจากพนักงานสาขา, เภสัช, WH warehouse และ WH supervisor
 - PDA ที่ออฟไลน์ไม่สามารถรับ branch confirm lock ทันที รายการใหม่ต้อง sync ภายหลังและรอ Confirm รอบถัดไป
+- WH PDA เก่าระหว่าง workflow-v2 compatibility อาจยังเขียน `WH_counts`/`WH_rechecks`; reader ใหม่ต้อง dual-read โดยไม่บวกซ้ำกับ `WH/items` และ committed op ต้องชนะ delayed write เสมอ
+- rollback WH workflow กลับ legacy ปลอดภัยเฉพาะก่อนมี post-cutover committed op แรก หลังจากนั้น legacy confirmation doc รับ final ใหม่ไม่ได้แล้วและ recovery ต้อง roll-forward จาก op results
 - Pharmacy Desktop ต้องออนไลน์ระหว่าง Confirm เพื่ออ่าน server และ acquire lock
 - Audit Verify บางเส้นทางยังไม่รองรับ pending quantity 0 เพราะ pending map กรองค่ามากกว่า 0 ห้ามแก้เงียบ ๆ โดยไม่กำหนด business rule
 - Firestore rules ปัจจุบันอนุญาต read/write collections ที่ใช้โดยแอป การ tighten rules เป็นงาน security/migration แยกต่างหากและต้องทดสอบทุก client
@@ -266,7 +274,7 @@ Git safety:
 
 - เว็บ: commit/push ไป `main` แล้ว Vercel deploy; ไม่ต้องออก APK
 - Service Worker: bump `CACHE` ใน `sw.js` เมื่อแก้ assets/cache behavior
-- Firestore Rules: copy และ Publish ผ่าน Firebase Console หลัง review
+- Firestore Rules: copy และ Publish ผ่าน Firebase Console หลัง review; ถ้า runtime เพิ่ม subcollection ใหม่ต้อง Publish Rules ที่รองรับก่อน deploy เว็บ มิฉะนั้น client ทุกเครื่องจะได้ `permission-denied`
 - Android: bump version, update `version.json`, commit, tag release และ push tags
 - หลังแก้ behavior ให้ update `CLAUDE.md` หรือ skill ที่เกี่ยวข้อง เพื่อไม่ให้ agent รอบถัดไปย้อน Bug เดิม
 

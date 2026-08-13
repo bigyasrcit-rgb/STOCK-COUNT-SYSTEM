@@ -57,9 +57,11 @@ APK เป็นแค่ WebView wrapper — แก้ `index.html` → Vercel 
 ## ⚠️ กฎ 3 — Cloud confirmation เป็น authoritative
 
 - WH Supervisor ใช้ Cloud เป็น source of truth; localStorage เป็น cache เท่านั้น
-- Precedence ต้องคงเป็น R01/R16 master → session base → Count marker → `WH_counts` → Recheck marker → `WH_rechecks`
-- marker ใน `countResetAt` เดียวกันต้องชนะ session/PDA snapshot เก่า และ Recheck marker ต้องชนะ Count marker ที่ยังเป็น `audit`
-- Count/Recheck Confirm ต้องอ่าน server ล่าสุดและเขียน marker + ลบ pending ใน Firestore transaction เดียว เปลี่ยน local state หลัง transaction สำเร็จเท่านั้น
+- WH schema v2 ใช้ `{branch}/items/{sku}` เป็น live state และใช้เฉพาะผลใน `WH/confirm_ops/{opId}` ที่ `state==='committed'` เป็น final marker; operation ที่ยัง `preparing`/`aborted` ต้องไม่มีผลต่อ UI
+- Precedence ต้องคงเป็น R01/R16 master → item base → Count final (committed op หรือ legacy marker ระหว่าง compatibility) → Count pending เฉพาะที่ยังไม่มี final → Recheck final → Recheck pending เฉพาะที่ยังไม่มี final
+- committed Recheck ต้องชนะ Count final ที่ยังเป็น `audit`; final ใน `countResetAt` เดียวกันต้องชนะ PDA snapshot/legacy inbox ที่มาช้าเสมอ
+- Count/Recheck Confirm ต้องอ่าน server ล่าสุดและตรวจ epoch/master/source fingerprint ก่อน publish; เปลี่ยน local state หลัง transaction ที่ flip operation เป็น `committed` สำเร็จและโหลด results ครบ+hash ตรงเท่านั้น
+- การ materialize committed result กลับลง `WH/items/{sku}` และล้าง legacy inbox ทำภายหลังได้แบบ idempotent; ล้มกลางชุดห้ามทำให้ committed op เสียอำนาจหรือทำให้ผู้ใช้เห็นผลบางส่วน
 - generic `audit` ที่ไม่มี `auditor` ห้ามทับ `pass`/`stock_adjustment` ที่ Supervisor ยืนยันแล้ว
 - ห้าม simplify `_applyCloudScanData()`/`syncToFirestore()` หรือเปลี่ยน merge order โดยไม่ทดสอบ stale snapshot, delayed PDA write, offline และสอง Desktop พร้อมกัน
 - Pharmacy Confirm ต้องทำบน Desktop ผ่าน branch lock + batch processing PDA ห้ามเรียก Confirm โดยตรง
@@ -183,8 +185,10 @@ Audit Verify ของเภสัชก็เช่นกัน — สแก�
 | `{branch}/items/{sku}` | **schema v2:** 1 document ต่อ SKU ต่อรอบนับ (subcollection) |
 | `{branch}_r01` | R01 master/version + R16 upload metadata |
 | `global_pm`, `global_r05` | shared Product/Barcode master |
-| `WH_counts`, `WH_count_confirmations` | Count inbox + authoritative confirmation markers |
-| `WH_rechecks`, `WH_recheck_confirmations` | Recheck inbox + authoritative confirmation markers |
+| `WH/confirm_ops/{opId}` | WH workflow v2 operation; publish ทั้งชุดด้วย `state:'committed'` |
+| `WH/confirm_ops/{opId}/results/{sku}` | ผล Count/Recheck ที่เตรียมไว้ต่อ SKU; reader ใช้เมื่อ parent op committed และ hash ครบเท่านั้น |
+| `WH_counts`, `WH_count_confirmations` | legacy Count inbox/marker — dual-read ระหว่าง compatibility เท่านั้น ห้ามใช้เขียน final ใหม่ |
+| `WH_rechecks`, `WH_recheck_confirmations` | legacy Recheck inbox/marker — dual-read ระหว่าง compatibility เท่านั้น ห้ามใช้เขียน final ใหม่ |
 | `WH_r16_104_meta`, `WH_r16_103_meta` | active timeline generation/version |
 | `WH_r16_{kind}_{generation}_{index}` | R16 chunk เป้าหมายไม่เกินประมาณ 650 KB |
 | `{branch}_confirm_lock` | Pharmacy Desktop Confirm lock (SRC/KKL/SSS) |
@@ -245,7 +249,7 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
    - offline PDA สแกนค้างแล้วกลับ online → `_reconcileScanItems` push ครบ ไม่ทับของเครื่องอื่น · `offline-reconcile.spec.js`
 2. **composite index `countResetAt` + `status`** — ยังไม่ยืนยันว่าสร้างใน Console แล้ว ถ้า Confirm error พร้อมลิงก์สร้าง index = ยังไม่มี ให้กดลิงก์สร้าง · **automated test จับเคสนี้ไม่ได้** เพราะ emulator ไม่บังคับ index
 3. **KKL/SSS ยังเป็น v1** — จะ cutover เองตอน `startNewCount()` ครั้งถัดไป (ไม่ต้อง migrate เพราะ session เล็ก ~1 KB)
-4. **blob ก้อนอื่นยังไม่ย้าย (Stage 1b)** — `WH_counts`, `WH_rechecks`, `WH_count_confirmations`, `WH_recheck_confirmations`, `{branch}_pharmacy_audit_markers` ยังเป็น `items:{}` map ก้อนเดียว มีเพดาน 1 MiB เดียวกัน ปัจจุบันเล็ก (`WH_recheck_confirmations` ~46 KB สูงสุด) ยังไม่เร่งด่วนแต่ต้องเฝ้า
+4. **WH workflow v2 (Stage 1b, ส.ค. 2026)** — `WH_count_confirmations` ชนเพดาน 40,000 index entries ก่อนถึง 1 MiB (873 markers; Confirm ที่เหลือเริ่มล้ม) จึงห้ามเพิ่ม final ลง dynamic-map docs อีก ใช้ `WH/confirm_ops/{opId}/results/{sku}` + atomic committed pointer ตาม §WH Count/Recheck ด้านล่าง ระหว่าง rollout ต้อง dual-read legacy และ roll-forward จาก committed op; `{branch}_pharmacy_audit_markers` ยังเป็น blob ที่ต้องเฝ้าแยกต่างหาก
 5. **Confirm ยังคำนวณฝั่ง client → กฎ Desktop-only ยังอยู่ (Stage 2)** — ปลดได้เมื่อย้ายสูตร `effectiveQty` ไป Cloud Function
 6. **มี automated test แล้ว (`tests/`) แต่ไม่แทนการทดสอบมือ** — ดู §Automated Tests ด้านล่าง; PDA จริง, composite index และ WH inbox flow ยังไม่ครอบ
 7. **เก็บกวาดหลังเสถียร:** เมื่อผ่านรอบนับจริง ≥2 รอบ ค่อยลบ blob path เดิม (`_applyCloudScanData` merge guard, blob branch ใน `syncToFirestore`/`restoreFromFirestore`) และลบ `{branch}_v1_backup` — **ห้ามลบก่อนหน้านั้น** เพราะ rollback พึ่งพาอยู่
@@ -287,12 +291,23 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 
 - WH R01/R16 master และ raw timeline ถูก sync ผ่าน Firestore เพื่อให้ Supervisor หลายเครื่องเห็นข้อมูลชุดเดียวกัน; localStorage/IndexedDB เป็น cache ที่ต้อง version ตรงเท่านั้น
 - ปุ่ม R01.102 แสดงเวลาอัปโหลดล่าสุดจาก Cloud เพื่อให้เครื่องอื่นรู้ว่า master ถูกอัปแล้ว
-- warehouse PDA เขียน live Count ไป `WH_counts` และ live Recheck ไป `WH_rechecks`
-- Supervisor Confirm รายคน/ทั้งหมดผ่าน transaction; pending ของคนอื่นห้ามถูกแตะในการ Confirm รายคน
+- warehouse PDA เขียน live Count/Recheck ลง `stock_sessions/WH/items/{sku}`; `WH_counts`/`WH_rechecks` เป็น legacy bridge ชั่วคราวสำหรับ client เก่าและห้ามนำยอดจากสอง path มาบวกกัน เพราะเป็น scan เดียวกันซ้ำกัน ให้เลือก source ล่าสุดด้วย `countAt`/`recheckAt`
+- final ของ Count/Recheck ใช้ operation schema:
+  - `stock_sessions/WH/confirm_ops/{opId}` มี `kind` (`count|recheck`), `state` (`preparing|committed|aborted`), `countResetAt`, `staffName`, `candidateCount`, `candidateHash`, `r01Version`, `r16Version`, `r16_103Version`, `owner`, `createdAt`, `committedAt`
+  - `stock_sessions/WH/confirm_ops/{opId}/results/{sku}` มี `opId`, `kind`, `sku`, `countResetAt`, `sourceRev`, `sourceAt` และ marker fields เดิมทั้งหมดที่ใช้ render/export/audit
+  - item ที่ materialize แล้วเก็บ `whCountOpId`/`whRecheckOpId`; field เหล่านี้เป็น provenance ไม่ใช่ตัวแทน parent committed state — reader ยังต้องตรวจ operation
+- Confirm สร้าง op เป็น `preparing` → เขียน immutable results เป็น batch ไม่เกิน 400 → อ่านจาก server ตรวจ `candidateCount` + canonical `candidateHash` → transaction อ่าน epoch, R01/R16 meta, candidate item/legacy source และ fingerprint ซ้ำ → flip parent op เป็น `committed` เพียง write เดียว
+- Rules บังคับ result เป็น create-once (read/create/delete แต่ update ไม่ได้) และ parent op update ได้เฉพาะเมื่อ state เดิมเป็น `preparing` ไป `preparing|committed|aborted`; committed/aborted ห้ามย้อน แต่ delete ยังใช้ได้ตอน cleanup
+- Reader ต้อง ignore `preparing`/`aborted`; สำหรับ committed op ต้องโหลด results ครบและ hash ตรงก่อน overlay **ทั้งชุดพร้อมกัน** ถ้าขาด/อ่านพลาดให้แสดง error และคง state ก่อนหน้า ห้าม apply บาง SKU
+- หลัง commit ให้ materialize result ลง `WH/items/{sku}` และล้าง legacy pending แบบ chunk/idempotent; ถ้าหน้าปิดหรือเน็ตหลุดกลางงาน ให้ recovery ทำต่อจาก committed results โดยห้ามคำนวณผลใหม่
+- Supervisor Confirm รายคนต้องแตะเฉพาะ candidate ของคนนั้น; pending ของคนอื่นห้ามถูก materialize/ลบ การ Confirm ทั้งหมดที่เกิน transaction/write limit ห้ามแอบแบ่งเป็นหลาย final operations เพราะจะเปลี่ยน all-or-none เป็น partial
 - Supervisor ไม่รีเช็คเอง — ป็อปอัพ Audit Verify เป็น read-only (`_isWhSupervisorAuditReadonly()`) ซ่อนช่องสแกน และปุ่มยืนยันในป็อปอัพต้อง dispatch ไป `confirmAllRecheckSupervisor()` (transaction) ห้ามยืนยันแบบ local ล้วน
 - Count marker `audit` เปิดงาน Recheck โดยเริ่ม `recheckQty` ว่าง/0 ตาม UI; warehouse สแกนแล้ว status ยังเป็น `audit` จน Supervisor Confirm รอบสอง
-- listener ทั้ง Supervisor/PDA ต้อง apply marker ก่อน inbox เก่า และ backfill/write ต้องข้าม SKU ที่มี marker ใน epoch เดียวกัน
-- เริ่มนับใหม่/ล้างข้อมูลต้องล้าง inbox, markers, WH R16 meta/chunks และ cache ของรอบเก่า
+- listener/load/pull ทั้ง Supervisor/PDA ต้อง overlay committed op หลัง item snapshot ทุกครั้ง; committed result ต้องชนะ legacy marker/inbox และ delayed offline write ใน epoch เดียวกัน
+- migration กลางรอบต้องหยุด WH ด้วย lock, รอทุก PDA `Synced`, สำรอง legacy docs+current items, stage same-epoch legacy final เป็น committed migration op, verify count/hash จาก server แล้วจึง cutover; legacy pending กับ item ที่เป็น scan เดียวกันห้าม sum
+- legacy docs เก็บ read-only เป็น forensic/compatibility backup ห้ามลบเพื่อเพิ่มพื้นที่และห้าม rollback กลับไปเขียน marker ก้อนเดิมหลังมี post-cutover committed op; หลังจุดนั้น recovery = roll-forward จาก op results เท่านั้น
+- เริ่มนับใหม่/ล้างข้อมูลต้องล้าง inbox/legacy markers, WH R16 meta/chunks/cache และลบ `results` ใต้ op ก่อนลบ op parent (Firestore ไม่ลบ subcollection ตาม parent); reader กรอง `countResetAt` เสมอเพื่อให้เศษ cleanup รอบเก่าไม่มีผล
+- `firestore.rules` ต้องมี match แยกสำหรับ `WH/confirm_ops/{opId}` และ `results/{sku}` และต้อง Publish ก่อน deploy runtime; Rules ต้องคง immutable result + monotonic op state ตามด้านบน และ update `WH/items/{sku}` ใน epoch เดียวกันต้องคง `whCountOpId`/`whRecheckOpId` ที่มีอยู่แล้ว เพื่อกัน delayed PDA replace ลบ final provenance (branch อื่น, epoch ใหม่, create/delete คง behavior เดิม)
 
 ### PDA power/audio/toast policy
 

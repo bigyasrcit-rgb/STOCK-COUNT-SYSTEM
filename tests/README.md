@@ -55,7 +55,8 @@ $env:FIRESTORE_EMULATOR_HOST='127.0.0.1:8791'; npm run e2e:attach   # แล้�
 | `lib/routes.js` | **หัวใจของ isolation** — allowlist, inject emulator shim, vendor SDK, stub `?_vchk=`/`maintenance.json` |
 | `lib/static-server.mjs` | เสิร์ฟ repo root + inject shim (ต้อง inject ที่ server ไม่ใช่ `route.fulfill` ไม่งั้น Chromium ตัด cross-port fetch ไป emulator) |
 | `lib/boot.js` | สร้าง context/page + login ผ่าน `_autoUpdate` backdoor + บล็อก Service Worker |
-| `lib/scenario.js` | flow ระดับสูง: `bootFreshCount` (เครื่องแรก → `startNewCount()` จริง), `bootJoinCount` (เครื่องที่ 2), `armR16` |
+| `lib/scenario.js` | flow ระดับสูง: `bootFreshCount` (เครื่องแรก → `startNewCount()` จริง), `bootJoinCount` (เครื่องที่ 2), `armR16`/`armWhR16` |
+| `lib/wh-workflow.js` | fixture/helper สังเคราะห์สำหรับ WH Count/Recheck, committed operations และ legacy compatibility (**ไม่มีข้อมูล production**) |
 | `lib/fixtures.js` | catalog สังเคราะห์ 20 SKU + ตัวสร้าง CSV (**ห้ามใส่ข้อมูลจริง**) |
 | `lib/seed.js` / `lib/emulator.js` | seed master docs / items · `clearAll`, `waitForDoc` |
 | `specs/logic/**` | เทสสูตรและ merge — ไม่ใช้ emulator |
@@ -71,12 +72,16 @@ $env:FIRESTORE_EMULATOR_HOST='127.0.0.1:8791'; npm run e2e:attach   # แล้�
 **อื่นๆ:** สูตร `effectiveQty`, กฎราคา ProductMaster, zero-sys/negSys first scan, multiplier, unknown barcode,
 `updatePharmacyRecheckQty`, merge rules ของ `_applyCloudScanData`, firestore.rules schema guard, CSV upload path
 
+**WH workflow v2:** Confirm-All 577 SKU, Confirm แยกพนักงาน, Count/Recheck committed operation,
+atomic reader overlay, recovery หลัง commit, Dashboard precedence, candidate/master race abort, branch lock,
+canonical hash และ rules ป้องกัน stale PDA/legacy final map
+
 ## สิ่งที่เทสแทนไม่ได้ (ยังต้องทดสอบมือ)
 
 - **PDA จริง**: Intent scanner, จังหวะ keystroke, WebView, เสียง, APK — เทสจำลองแค่ viewport + User-Agent
 - **composite index บน production** (`countResetAt` + `status`) — emulator ไม่บังคับ index ปัญหานี้โผล่เฉพาะของจริง
 - **KKL/SSS v1 blob path** — โดนทางอ้อมผ่าน merge tests ไม่ใช่ E2E เต็ม
-- **WH Count/Recheck inbox flow** — โครงรองรับแล้ว ยังไม่ได้เขียน spec (งานรอบถัดไป)
+- **ระยะเวลา transaction บนเครือข่าย production สำหรับ Confirm ชุดใหญ่มาก** — emulator ยืนยัน contract/atomicity แต่จำลอง WAN latency และ contention จริงไม่ได้
 - โควต้า/backoff ของ Firestore จริง — เทสได้แค่ logic ฝั่ง client
 
 ## เกร็ดสำคัญตอนเขียนเทสเพิ่ม

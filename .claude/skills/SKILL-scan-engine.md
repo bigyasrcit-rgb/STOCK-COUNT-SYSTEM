@@ -180,20 +180,28 @@ if (scanListMap.size > prevSize) {
 
 ---
 
-## WH Count Confirmation Workflow (July 2026)
+## WH Count/Recheck Confirmation Workflow v2 (August 2026)
 
-- WH warehouse PDA writes each live `scanning` SKU to `stock_sessions/WH_counts` with `countAt` and `countResetAt`.
+- WH workflow v2 ใช้ `stock_sessions/WH/items/{sku}` เป็น live state ของ Count/Recheck; `WH_counts`/`WH_rechecks` เป็น legacy bridge ชั่วคราวเท่านั้น ห้ามบวกสอง source เพราะเป็น scan เดียวกันซ้ำกัน ให้เลือกค่าล่าสุดด้วย `countAt`/`recheckAt`.
 - `stock_sessions/WH_r01` has `r01Version`; every WH client listens for a newer version and rebuilds `skuMap`. WH Supervisor login always reloads the cloud R01/session base, so localStorage is cache only.
 - WH R16 raw timelines are cloud-shared through top-level versioned chunk docs (`WH_r16_104_<generation>_<index>` / `WH_r16_103_<generation>_<index>`) plus `WH_r16_104_meta` / `WH_r16_103_meta`. Each `data_json` chunk targets at most 650 KB. Upload writes all chunks before switching meta; only the active meta generation is authoritative. Meta also stores `r01Version`; uploading a new R01 invalidates the old R16 set until R16.104/103 are uploaded for that version.
 - Supervisor downloads the matching raw timeline into memory/IndexedDB and rebuilds aggregate maps from that same version. IndexedDB is only a cache and is accepted only when `countResetAt` and version match the cloud meta.
-- Supervisor precedence is fixed: R01/R16 master → session base → count confirmation marker → `WH_counts` → recheck confirmation marker → `WH_rechecks`. Recheck marker wins over an older count `audit` marker.
-- Supervisor per-staff/all count confirmation uses a Firestore transaction: read latest `WH_counts`, `WH_r01`, and both R16 meta docs; abort if local/cloud versions differ; compute the R16-adjusted result; write `stock_sessions/WH_count_confirmations`; and delete pending fields atomically.
-- Count confirmation marker fields include `status`, `countedQty`, `scannedBy`, `countAt`, `confirmedAt`, `confirmedBy`, R16 components, `effectiveQty`, `systemQty`, `r01Version`, `r16Version`, `r16_103Version`, and `countResetAt`.
-- A same-epoch count confirmation marker is authoritative over stale session JSON and `WH_counts`; PDA backfill/write must skip confirmed SKUs. Failed/offline transactions must not mutate local state.
+- Supervisor precedence is fixed: R01/R16 master → item base → Count final (`committed` op; legacy marker เฉพาะช่วง compatibility) → Count pending เฉพาะเมื่อยังไม่มี final → Recheck final → Recheck pending เฉพาะเมื่อยังไม่มี Recheck final. Recheck final wins over an older Count `audit`.
+- Operation schema:
+  - `stock_sessions/WH/confirm_ops/{opId}`: `kind`, `state`, `countResetAt`, `staffName`, `candidateCount`, `candidateHash`, `r01Version`, `r16Version`, `r16_103Version`, `owner`, `createdAt`, `committedAt`.
+  - `stock_sessions/WH/confirm_ops/{opId}/results/{sku}`: `opId`, `kind`, `sku`, `countResetAt`, `sourceRev`, `sourceAt` + marker fields เดิมทั้งหมด (`status`, quantities, staff/times, R16 components, versions ฯลฯ).
+  - materialized `WH/items/{sku}` เก็บ `whCountOpId`/`whRecheckOpId` เพื่อ trace provenance แต่ parent op ที่ committed ยังเป็น authority.
+- Confirm protocol: สร้าง parent `state:'preparing'` → stage immutable result docs เป็น batches ≤400 → อ่าน server ตรวจ `candidateCount`/canonical `candidateHash` → transaction อ่าน session epoch, R01/R16 meta, candidate item/legacy sources และ source fingerprint ซ้ำ → flip parent เป็น `state:'committed'` เพียง write เดียว. ถ้า source/version เปลี่ยนให้ abort ทั้ง operation.
+- Rules บังคับ result เป็น create-once (update ไม่ได้) และ parent op update ได้เฉพาะเมื่อ state เดิมเป็น `preparing` ไป `preparing|committed|aborted`; committed/aborted ห้ามย้อน แต่ delete ยังเปิดไว้ให้ cleanup.
+- Reader ต้อง ignore `preparing`/`aborted`; committed op ต้องโหลด results ครบและ hash ตรงก่อน overlay ทั้งชุดพร้อมกัน. อ่านขาด/ผิด hash = แสดง error และคง state เดิม ห้าม apply บาง SKU.
+- หลัง commit ค่อย materialize results ลง `WH/items/{sku}` และล้าง legacy pending แบบ chunk/idempotent. Crash กลางชุดต้อง resume จาก committed results โดยไม่คำนวณใหม่; committed op ชนะ delayed PDA/legacy writes ใน epoch เดียวกันเสมอ.
+- Per-staff operation แตะเฉพาะ source ของพนักงานนั้น. Confirm-All ห้ามแบ่งเป็นหลาย committed operations แบบเงียบ ๆ เพราะ Firestore จำกัด 500 writes/transaction และการแบ่งจะเปลี่ยน all-or-none เป็น partial semantics.
 - Marker `audit` starts WH recheck with no `recheckQty`; warehouse scans recheck while status remains `audit`, then Supervisor performs the separate recheck confirmation.
 - Recheck confirmation transaction reads the latest `WH_r01` data and compares `recheckQty` with that server `systemQty` directly; it does not trust a stale local `skuMap`.
 - If a new R01/R16 meta version arrives while a Supervisor is open, Confirm stays blocked until the complete matching timeline is loaded. Never silently fall back to aggregate totals for WH confirmation.
-- `startNewCount()` and full clear delete `WH_counts`, `WH_count_confirmations`, `WH_rechecks`, `WH_recheck_confirmations`, active R16 meta/chunks, and the local WH R16 timeline snapshot.
+- Migration กลางรอบ: acquire WH lock + รอทุก PDA `Synced` → backup legacy docs/current-epoch items → stage same-epoch legacy finals เป็น migration ops → server verify count/hash → cutover. เก็บ legacy docs read-only; ห้ามลบเพื่อเพิ่มพื้นที่ และห้าม rollback ไปเขียน legacy final หลังมี post-cutover committed op (recovery ต้อง roll-forward).
+- `startNewCount()`/full clear ล้าง legacy inbox/markers, active R16 meta/chunks/cache และต้องลบ `results` ใต้ `confirm_ops` ก่อนลบ op parents เพราะ Firestore ไม่ cascade-delete subcollections. ทุก reader ยังต้องกรอง `countResetAt`.
+- `firestore.rules` ต้องมี narrow match แยกสำหรับ op/results และ Publish ก่อน runtime deploy. Rules ต้องคง immutable result + monotonic op state ตามด้านบน และ update `WH/items/{sku}` ใน epoch เดียวกันต้องคง `whCountOpId`/`whRecheckOpId` ที่ติดตั้งแล้ว เพื่อกัน delayed old-client replace ลบ final provenance; branch อื่น, epoch ใหม่, create/delete คง behavior เดิม.
 - Scan-hour gate 08:00-21:00 applies only to pharmacy branches; WH scanning is available 24 hours.
 
 ## WH Recheck Workflow
@@ -208,12 +216,11 @@ if (scanListMap.size > prevSize) {
 - **ยืนยันรีเช็คทีละคน:** `renderSupervisorRecheckButtons()` → ปุ่มเขียว per staff → `confirmRecheckByStaff(name)`
 - **ยืนยันรีเช็คทั้งหมด:** `confirmAllRecheckSupervisor()` → วน audit ที่มี `recheckQty && !auditor` → pass/stock_adjustment + `auditor=มายด์`
 
-**WH recheck confirmation marker (July 2026):**
-- `stock_sessions/WH_recheck_confirmations` เก็บผลยืนยันต่อ SKU (`status`, `auditor`, `confirmedAt`, `recheckQty`, `recheckAt`, `countResetAt`) และเป็น authoritative เหนือ `WH_rechecks` กับ session JSON
-- `confirmRecheckByStaff` / `confirmAllRecheckSupervisor` ใช้ Firestore transaction อ่าน pending ล่าสุด แล้วเขียน marker + ลบ pending พร้อมกัน; transaction fail = ห้ามเปลี่ยน local state
-- transaction รีเช็คอ่าน `WH_r01` ล่าสุดจาก server เพื่อใช้ `systemQty` และ marker บันทึก `systemQty`/`r01Version`/R16 versions ที่ใช้ตัดสิน
-- Supervisor และ warehouse PDA ฟัง marker; marker รอบ epoch เดียวกันต้องชนะ audit snapshot เก่า และล้าง pending ที่ PDA เขียนกลับมาช้า
-- หลังมี marker ห้าม `_writeWhRecheckInboxItem` / backfill ส่ง SKU เดิมซ้ำ; เริ่มนับใหม่/ล้างข้อมูลทั้งหมดต้องลบ marker doc
+**WH recheck confirmation (workflow v2):**
+- `confirmRecheckByStaff` / `confirmAllRecheckSupervisor` ใช้ `kind:'recheck'` operation protocol ชุดเดียวกับ Count; transaction ก่อน commit อ่าน `WH_r01` ล่าสุดจาก server เพื่อเทียบ `recheckQty` กับ `systemQty` และเก็บ `systemQty`/versions ไว้ใน result
+- committed Recheck result (`status`, `auditor`, `confirmedAt`, `recheckQty`, `recheckAt`, `countResetAt`, versions) authoritative เหนือ Count audit, item snapshot และ legacy `WH_rechecks`/`WH_recheck_confirmations`
+- listener ทุกจุดต้อง re-overlay committed ops หลัง item snapshot; late offline `audit` หรือ legacy backfill ห้ามลด `pass`/`stock_adjustment` กลับเป็น Audit
+- transaction/commit ล้ม = local state ไม่เปลี่ยน; materialization ล้มหลัง commit = recover ต่อจาก immutable results และ UI ยังใช้ committed result ได้
 - `_applyCloudScanData`: local ที่มี `auditor` ห้ามถูก cloud `audit` ที่ไม่มี auditor ทับ แต่ cloud audit ยังชนะ local unverified state ได้ตาม flow เภสัชเดิม
 
 `canVerify = currentRole === 'pharmacist' || currentRole === 'supervisor'`
