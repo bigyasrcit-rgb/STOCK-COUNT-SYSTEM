@@ -743,7 +743,8 @@
 
       <button class="popup-filter" onclick="setPopupFilter('unknown',this)"><span>❓</span><span>Unknown</span></button>
       <button class="popup-filter" onclick="setPopupFilter('del',this)"><span>🗑️</span><span>DEL</span></button>
-      <button class="popup-filter" onclick="setPopupFilter('pending',this)"><span>⏳</span><span>รอนับ</span></button>
+      <!-- label 'เหลือ' ไม่ใช่ 'รอนับ' — filter นี้รวม scanning (สแกนแล้วรอ Confirm) ด้วย ให้ตรงกับ Progress -->
+      <button class="popup-filter" onclick="setPopupFilter('pending',this)"><span>⏳</span><span>เหลือ</span></button>
     </div>
     <div class="stock-popup-toolbar" id="popupStaffFilterRow" style="display:none;padding-top:0;"></div>
     <div class="stock-popup-body">
@@ -5735,7 +5736,14 @@ function getFilteredPopupRows(){
   let rows=popupBaseRowsCache;
   // ปุ่ม DEL โชว์เฉพาะตัวที่ "ต้องนับ" (ส.ค. 2026) — DEL ที่ไม่มีของแล้ว/หมวดไม่ใช่สินค้าคงคลัง
   // ไม่ใช่งานของหน้างาน เอาออกให้เหลือเฉพาะรายการที่ต้องเดินไปหา · แท็ก DEL แดงในตารางยังขึ้นครบเหมือนเดิม
-  if(popupFilterState!=='all')rows=rows.filter(r=>{if(popupFilterState==='unknown')return r.isUnknown;if(popupFilterState==='del')return r.isDel&&_countableSkus.has(r.sku);if(popupFilterState==='pending')return r.sd.status==='pending';if(popupFilterState==='audit')return r.sd.status==='audit'||r.sd.status==='stock_adjustment';return r.sd.status===popupFilterState;});
+  //
+  // ปุ่ม "เหลือ" (key ยังเป็น 'pending') = **ส่วนที่ยังไม่เข้าตัวเศษ Progress** ต้องนิยามให้ตรงกับ
+  // updateStats() เป๊ะ: _countableSkus ที่ status ยังเป็น pending หรือ scanning
+  //   → จำนวนแถวในตาราง = ตัวหาร − ตัวเศษ พอดี · สแกนจนรายการหมด = Progress 100% พอดี
+  // ⚠️ แก้ตรงนี้ต้องแก้ให้ตรงกับเงื่อนไข skip ใน updateStats() คู่กันเสมอ ไม่งั้นสองตัวเลขจะเพี้ยนกันอีก
+  //   - ต้องคง 'scanning' ไว้: สแกนแล้วแต่ยังไม่ Confirm ก็ยังไม่นับเป็นตัวเศษ ถ้าตัดออกจะเกิดอาการ
+  //     "รายการว่างแล้วแต่ Progress ไม่ถึง 100%" ที่หน้างานสับสน
+  if(popupFilterState!=='all')rows=rows.filter(r=>{if(popupFilterState==='unknown')return r.isUnknown;if(popupFilterState==='del')return r.isDel&&_countableSkus.has(r.sku);if(popupFilterState==='pending')return _countableSkus.has(r.sku)&&(r.sd.status==='pending'||r.sd.status==='scanning');if(popupFilterState==='audit')return r.sd.status==='audit'||r.sd.status==='stock_adjustment';return r.sd.status===popupFilterState;});
   if(popupStaffFilter!=='all')rows=rows.filter(r=>(r.sd.scannedBy||'')===popupStaffFilter);
   if(search){const s=search.trim(),isNum=/^[0-9]+$/.test(s);if(isNum){const getBc=(csv,q)=>csv.split(',').map(x=>x.trim()).some(b=>b.startsWith(q));const tf=q=>rows.filter(r=>r.sku.toLowerCase().startsWith(q)||getBc(r.barcodes.toLowerCase(),q));let q=s,fl=tf(q);while(!fl.length&&q.length>3){q=q.slice(0,-1);fl=tf(q);}rows=fl;}else rows=rows.filter(r=>r.info.productName.toLowerCase().includes(s)||r.sku.toLowerCase().includes(s)||r.barcodes.toLowerCase().includes(s)||(r.sd.location||'').toLowerCase().includes(s));}
   return rows;
@@ -5783,7 +5791,7 @@ function updateStockCount(){const el=document.getElementById('stockCount');if(el
 function getStatusPill(s){const m={pass:'<span class="pill pill-pass">✅ Pass</span>',audit:`<span class="pill pill-audit">⚠️ ${_auditTerm()}</span>`,audit_check:'<span class="pill pill-pass">✅ Audit Check</span>',stock_adjustment:'<span class="pill pill-audit">⚠️ Stock Adjustment</span>',pending:'<span class="pill pill-pending">⏳ รอนับ</span>',unknown:'<span class="pill pill-unknown">❓Unknown</span>'};return m[s]||`<span class="pill pill-pending">${s}</span>`;}
 
 // label/ชื่อไฟล์ตามปุ่ม filter ที่เลือกอยู่ในป็อปอัพตอนกด Export — ให้ตรงกับที่ตารางแสดงผลเป๊ะ
-const POPUP_FILTER_LABELS={all:'ทั้งหมด',unknown:'ไม่พบในระบบ',del:'DEL',pending:'รอนับ',pass:'Pass'};
+const POPUP_FILTER_LABELS={all:'ทั้งหมด',unknown:'ไม่พบในระบบ',del:'DEL',pending:'เหลือ',pass:'Pass'};
 function exportExcel(){
   const header=['SKU','Barcode','ProductName','SystemQty','CountedQty','Status','Timestamp',_auditTerm()+' Status'],rows=[header];
   getFilteredPopupRows().forEach(r=>{rows.push([r.sku,r.barcodes,r.info.productName,r.info.systemQty,r.sd.countedQty,r.sd.status,_fmtDateDMY(r.sd.timestamp),r.sd.auditStatus||'pending']);});

@@ -176,6 +176,46 @@ test('filter DEL — โชว์เฉพาะ DEL ที่อยู่ใน
   await closeApp(app);
 });
 
+// ปุ่ม ⏳ เหลือ ต้องเป็น "ส่วนที่ยังไม่เข้าตัวเศษ Progress" เป๊ะ — จำนวนแถว = ตัวหาร − ตัวเศษ
+// ถ้าสองอันนี้หลุดจากกัน จะเกิดอาการ "สแกนจนรายการหมดแล้วแต่ Progress ไม่ถึง 100%"
+test('filter เหลือ — จำนวนแถว = ตัวหาร − ตัวเศษ ของ Progress เสมอ', async ({ browser }) => {
+  const app = await bootBare(browser);
+  await app.page.evaluate(() => { currentBranch = 'SRC'; });
+
+  const r01 = [
+    { colE: 'A-TODO', productName: 'ยังไม่สแกน', systemQty: 4 },
+    { colE: 'B-SCANNING', productName: 'สแกนแล้วรอ Confirm', systemQty: 4 },
+    { colE: 'C-DONE', productName: 'Confirm แล้ว', systemQty: 4 },
+    { colE: 'D-AUDIT', productName: 'Confirm แล้วเข้า audit', systemQty: 4 },
+    { colE: 'E-NOTCOUNT', productName: 'ไม่ต้องนับ (ว่าง + G=0)', systemQty: 0 },
+    { colE: 'F-NONCOUNT', productName: 'ไม่ต้องนับ (หมวด 11.)', systemQty: 4, nc: 1 },
+  ];
+  const pm = r01.map((r) => ({ sku: r.colE, productName: r.productName, unitPrice: 10 }));
+
+  await countableFrom(app.page, { r01, pm });
+
+  const out = await app.page.evaluate(() => {
+    const set = (sku, status) => Object.assign(state.scanData.get(sku), { status, countedQty: 4 });
+    set('B-SCANNING', 'scanning');
+    set('C-DONE', 'pass');
+    set('D-AUDIT', 'audit');
+    updateStats();
+    invalidatePopupRowsCache();
+    popupFilterState = 'pending';
+    const rows = getFilteredPopupRows().map((r) => r.sku).sort();
+    const [num, denom] = document.getElementById('progressCount').textContent.split(' / ').map(Number);
+    return { rows, num, denom };
+  });
+
+  // countable = A/B/C/D (E ไม่มีของ+ไม่จัดชั้น · F หมวดไม่ใช่สินค้าคงคลัง)
+  expect(out.denom).toBe(4);
+  expect(out.num).toBe(2);                                   // C-DONE + D-AUDIT
+  expect(out.rows).toEqual(['A-TODO', 'B-SCANNING']);         // ยังไม่สแกน + สแกนแล้วรอ Confirm
+  expect(out.rows.length).toBe(out.denom - out.num);          // invariant ที่เทสนี้มีไว้ล็อก
+
+  await closeApp(app);
+});
+
 test('_countableSkus — ไม่มี R01 = 0 (ไม่ fallback ไปขนาด catalog)', async ({ browser }) => {
   const app = await bootBare(browser);
   await app.page.evaluate(() => { currentBranch = 'SRC'; });
