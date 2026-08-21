@@ -24,6 +24,15 @@ async function waitForAuditMarkerApplied(page, skus) {
   );
 }
 
+// The device has no pending item writes left: nothing queued and nothing in flight.
+// Confirm's mid-work rev check aborts the batch if a write lands between its two server reads.
+async function waitForPdaQuiet(page) {
+  await page.waitForFunction(
+    () => _dirtySkus.size === 0 && _scanItemInFlight.size === 0 && !_scanItemFlushing,
+    null, { timeout: 20000, polling: 100 },
+  );
+}
+
 test.describe('Pharmacy Audit Verify (schema v2)', () => {
   test.beforeEach(() => requireEmulator());
   test.setTimeout(90_000);
@@ -46,6 +55,11 @@ test.describe('Pharmacy Audit Verify (schema v2)', () => {
     });
     await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NORM', (d) => d && d.recheckQty === 10);
     await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-F05', (d) => d && d.recheckQty === 4);
+
+    // Confirm re-reads the server and aborts the whole batch if any candidate's rev moved mid-work
+    // (the production mid-work guard). A PDA still flushing trips it, so wait for it to go quiet
+    // instead of racing — a real pharmacist never hits Confirm inside the PDA's write window.
+    await waitForPdaQuiet(pda.page);
 
     await desk.page.evaluate(() => _confirmPharmacyAuditBatched());
     await desk.page.waitForFunction(() => _branchConfirming === false, null, { timeout: 30000, polling: 100 });
@@ -72,6 +86,7 @@ test.describe('Pharmacy Audit Verify (schema v2)', () => {
 
     await pda.page.evaluate(() => { updatePharmacyRecheckQty('S-NORM', 10); return _flushDirtySkus(); });
     await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NORM', (d) => d && d.recheckQty === 10);
+    await waitForPdaQuiet(pda.page);
 
     await desk.page.evaluate(() => _confirmPharmacyAuditBatched());
     await desk.page.waitForFunction(() => _branchConfirming === false, null, { timeout: 30000, polling: 100 });
@@ -85,7 +100,7 @@ test.describe('Pharmacy Audit Verify (schema v2)', () => {
     await closeApp(desk);
   });
 
-  test('updatePharmacyRecheckQty: SET semantics, min 1, no-op when unchanged, auditor guard', async ({ browser }) => {
+  test('updatePharmacyRecheckQty: SET semantics, 0 allowed, negatives rejected, auditor guard', async ({ browser }) => {
     const desk = await bootFreshCount(browser, { role: 'pharmacist', user: 'Pharm', mode: 'desktop' });
     await seedItems(PROJECT_ID, 'SRC', desk.epoch, [
       { sku: 'S-NORM', status: 'audit', auditStatus: 'pending', initialStatus: 'audit', countedQty: 8, scannedBy: 'PDA-A' },
@@ -95,26 +110,31 @@ test.describe('Pharmacy Audit Verify (schema v2)', () => {
     await pda.page.waitForFunction(() => state.scanData.get('S-NORM')?.status === 'audit', null, { timeout: 15000, polling: 100 });
     await waitForAuditMarkerApplied(pda.page, ['S-NORM']);
 
-    // SET (not accumulate): 7 then 3 → 3
+    // SET (not accumulate): 7 then 3 → 3 · 0 = "รีเช็คแล้วไม่มีของ" ต้องบันทึกได้ · ติดลบถูกปฏิเสธ
     const out = await pda.page.evaluate(() => {
       updatePharmacyRecheckQty('S-NORM', 7);
       const afterFirst = state.scanData.get('S-NORM').recheckQty;
       updatePharmacyRecheckQty('S-NORM', 3);
       const afterSecond = state.scanData.get('S-NORM').recheckQty;
-      updatePharmacyRecheckQty('S-NORM', 0);            // rejected — min 1
+      updatePharmacyRecheckQty('S-NORM', 0);            // accepted (ส.ค. 2026)
       const afterZero = state.scanData.get('S-NORM').recheckQty;
+      const inPendingAtZero = getPharmacistAuditPendingMap().has('S-NORM');
+      updatePharmacyRecheckQty('S-NORM', -2);           // rejected — ติดลบ
+      const afterNegative = state.scanData.get('S-NORM').recheckQty;
       updatePharmacyRecheckQty('S-F05', 9);             // rejected — already has auditor
       const guarded = state.scanData.get('S-F05').recheckQty;
-      return { afterFirst, afterSecond, afterZero, guarded, by: state.scanData.get('S-NORM').recheckBy };
+      return { afterFirst, afterSecond, afterZero, inPendingAtZero, afterNegative, guarded, by: state.scanData.get('S-NORM').recheckBy };
     });
     expect(out.afterFirst).toBe(7);
     expect(out.afterSecond).toBe(3);
-    expect(out.afterZero).toBe(3);
+    expect(out.afterZero).toBe(0);
+    expect(out.inPendingAtZero).toBe(true);   // 0 ต้องเข้าคิวยืนยัน ไม่ค้าง audit ถาวร
+    expect(out.afterNegative).toBe(0);        // ค่าติดลบไม่ถูกเขียนทับ
     expect(out.guarded).toBeUndefined();
     expect(out.by).toBe('PharmPDA');
 
     await pda.page.evaluate(() => _flushDirtySkus());
-    await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NORM', (d) => d && d.recheckQty === 3);
+    await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NORM', (d) => d && d.recheckQty === 0);
 
     await closeApp(pda);
     await closeApp(desk);

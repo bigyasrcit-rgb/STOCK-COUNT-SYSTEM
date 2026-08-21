@@ -77,9 +77,14 @@ effectiveQty = countedQty + soldQty + r16103Qty - inboundQty
 - `inboundQty` มาจากรายการรับเข้าที่เกิดก่อน/ตรงเวลาสแกน
 - `r16103Qty` ใช้กับ WH สำหรับของรับเข้าแต่ยังไม่ขึ้นชั้น
 - `effectiveQty === systemQty` → `pass`
-- สาขายา `negSys` หรือ `noStock` ที่เข้าเงื่อนไข → `stock_adjustment`
-- สาขายา สแกนสินค้า `negSys || systemQty===0` ครั้งแรกด้วย plain scan = บันทึกนับ 0 (สแกนป้ายชั้น = เช็คแล้วไม่มีของ) ครั้งที่ 2 เป็นต้นไปบวกปกติ
-  `systemQty===0` ที่นับเจอของต้องไป `audit` ให้เภสัชรีเช็คเสมอ ห้ามลัดเป็น `stock_adjustment` เอง
+- สาขายา `noStock` ที่เข้าเงื่อนไข → `stock_adjustment`
+- **สาขายา `negSys` (ระบบติดลบ) → บังคับเป็น `audit` เสมอไม่ว่านับได้เท่าไร (ส.ค. 2026)**
+  ต้องเช็ค `negSys` **ก่อน** `effectiveCnt===sys` เพราะ systemQty ถูก clamp เป็น 0 แล้ว → นับ 0 จะกลายเป็น `pass` เงียบๆ
+  เดิมลัดไป `stock_adjustment` โดยไม่ผ่านเภสัช — ห้ามย้อนกลับ
+- `systemQty===0` ที่นับเจอของต้องไป `audit` ให้เภสัชรีเช็คเสมอ ห้ามลัดเป็น `stock_adjustment` เอง
+- **กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกหมดแล้ว (ส.ค. 2026)** — ทั้ง G=0 และ G ติดลบสแกนแล้วบวกตามปกติ ห้ามนำกลับมา
+- **ยอดรีเช็ค 0 ต้องบันทึกและยืนยันได้** (= "ตรวจแล้วไม่มีของ") ต่างจาก "ยังไม่รีเช็ค" (`recheckQty == null`)
+  ถ้ากลับไปกรอง `qty > 0` ใน `getPharmacistAuditPendingMap` หรือบังคับขั้นต่ำ 1 ใน `updatePharmacyRecheckQty` → negSys จะค้าง audit ถาวร
 - กรณีอื่น → `audit`
 - WH Recheck รอบสองเปรียบเทียบ `recheckQty` กับ `systemQty` จาก R01 ล่าสุดบน Firestore โดยตรง ไม่ใช้ค่า local ที่อาจค้าง
 
@@ -94,8 +99,9 @@ effectiveQty = countedQty + soldQty + r16103Qty - inboundQty
 | `{branch}` | session หลักของ branch (schema v2 = metadata เท่านั้น) |
 | `{branch}/items/{sku}` | schema v2: 1 document ต่อ SKU ต่อรอบนับ (subcollection) |
 | `{branch}_r01` | R01 master/version และ R16 metadata ของสาขา |
-| `global_pm` | Product Master |
-| `global_r05` | Barcode master R05 |
+| `{branch}_pm` | Product Branch Master — catalog ต่อสาขา (ส.ค. 2026 แทน `global_pm`) |
+| `global_pm` | legacy read-only — ไม่มีโค้ดอ่าน/เขียนแล้ว เก็บไว้เพื่อ rollback ห้ามลบ |
+| `global_r05` | Barcode master R05 (ยัง global ใช้ร่วมทุกสาขา) |
 | `WH/confirm_ops/{opId}` | WH workflow v2 operation; authoritative เมื่อ `state==='committed'` เท่านั้น |
 | `WH/confirm_ops/{opId}/results/{sku}` | ผล Count/Recheck ต่อ SKU ของ operation นั้น |
 | `WH_counts`, `WH_rechecks` | legacy inbox ระหว่าง compatibility; live state ใหม่อยู่ที่ `WH/items/{sku}` |
@@ -193,6 +199,8 @@ R01/R16 master
 
 | (ก.ค. 2026) | session blob ชนเพดาน 1 MiB ของ Firestore เมื่อนับครบทั้งสาขา (~1.6 MB) แล้ว `ref.set()` throw โดยโชว์แค่ `'Sync Error'` — ข้อมูลนับหายเงียบ | `scanData` ต้องอยู่ใน `{branch}/items/{sku}` (schema v2); `_reportSyncError()` ต้องรายงานกรณีเกินขนาดให้ชัดแทน throw เงียบ; ห้าม dual-write blob+items |
 | (ส.ค. 2026) | `WH_count_confirmations` เก็บ SKU เป็น dynamic map จนชนเพดาน 40,000 index entries ที่ 873 markers ทำให้ Supervisor Confirm ต่อไม่ได้ ทั้งที่ document ยังไม่ถึง 1 MiB | ห้ามเพิ่ม final ลง legacy map; ใช้ `WH/confirm_ops/{opId}/results/{sku}` และ atomic committed pointer, เก็บ legacy read-only ระหว่าง migration และ roll-forward หลังมี post-cutover commit |
+| (ส.ค. 2026) | Progress มีตัวเศษกับตัวหารมาคนละแหล่ง (ตัวเศษวนจาก `scanData`, ตัวหารนับจาก `r01Data`) → ถ้ากรอง SKU ออกข้างเดียว % ทะลุ 100 ได้ · และสินค้าที่ระบบเหลือ 0 ถูกนับเป็นเป้าหมายที่ต้องเดินไปสแกนป้ายชั้น | **ตัวเศษกับตัวหารต้องมาจาก `_countableSkus` ชุดเดียวกันเสมอ** ห้ามแยกแหล่งคำนวณ · **ห้ามใช้ `skuMap.systemQty` แยก "G=0" กับ "G ติดลบ"** เพราะสาขายา clamp `negSys` เป็น 0 แล้ว ต้องอ่าน `state.r01Data` ค่าดิบ · G=0 ไม่อยู่ใน Progress แต่ยิงมาแล้วต้องได้ `audit` |
+| (ส.ค. 2026) | Product Master เป็นไฟล์กลางไฟล์เดียวทุกสาขา ทำให้ Total SKU เป็นเลขทั้งบริษัทและต้องมีการ์ด `SKU BRANCH` ซ้อน | PM เป็น `{branch}_pm` ต่อสาขา · **ห้ามใส่ fallback ไป `global_pm`** (สาขาที่ยังไม่อัปต้องเห็น "ยังไม่โหลด" ไม่ใช่ catalog สาขาอื่น) · `restoreMasterFromFirestore` ต้องล้าง PM เมื่อ doc ไม่มี · ห้ามลบ `global_pm` บน cloud (rollback) |
 
 สถานะปัจจุบันของการแก้ WH: โค้ดรุ่นใหม่ถูก commit/push แล้ว และเขียนผลยืนยันใหม่ผ่าน `WH/confirm_ops/{opId}/results/{sku}` เท่านั้น จึงไม่ควรชนเพดาน dynamic-map เดิมซ้ำในรอบถัดไป เมื่อแก้หรือ deploy ที่เกี่ยวข้อง ต้อง Publish `firestore.rules` ก่อน/พร้อม deploy เว็บ และบังคับให้ Supervisor กับ PDA ทุกเครื่องโหลดรุ่นใหม่ หาก Confirm ยังล้มเหลว ให้ตรวจ Rules/runtime version, R01/R16 readiness/version, confirm lock, network และ quota; ห้ามลบ legacy markers หรือเริ่มรอบใหม่เพื่อแก้เฉพาะหน้า
 
@@ -249,7 +257,7 @@ Git safety:
 - WH PDA เก่าระหว่าง workflow-v2 compatibility อาจยังเขียน `WH_counts`/`WH_rechecks`; reader ใหม่ต้อง dual-read โดยไม่บวกซ้ำกับ `WH/items` และ committed op ต้องชนะ delayed write เสมอ
 - rollback WH workflow กลับ legacy ปลอดภัยเฉพาะก่อนมี post-cutover committed op แรก หลังจากนั้น legacy confirmation doc รับ final ใหม่ไม่ได้แล้วและ recovery ต้อง roll-forward จาก op results
 - Pharmacy Desktop ต้องออนไลน์ระหว่าง Confirm เพื่ออ่าน server และ acquire lock
-- Audit Verify บางเส้นทางยังไม่รองรับ pending quantity 0 เพราะ pending map กรองค่ามากกว่า 0 ห้ามแก้เงียบ ๆ โดยไม่กำหนด business rule
+- Audit Verify รองรับ pending quantity 0 แล้ว (ส.ค. 2026) = "ตรวจแล้วไม่มีของ" ต่างจาก "ยังไม่รีเช็ค" (`recheckQty == null`) — ห้ามกลับไปกรองค่ามากกว่า 0
 - Firestore rules ปัจจุบันอนุญาต read/write collections ที่ใช้โดยแอป การ tighten rules เป็นงาน security/migration แยกต่างหากและต้องทดสอบทุก client
 - การอัป R01 ของสาขายาเป็น daily baseline แต่ไม่ควรล้าง Audit/Pass เก่าที่ตั้งใจ freeze โดยพลการ
 - WH สแกนได้ 24 ชั่วโมง ส่วนสาขายายังคง time gate ตามเวลาทำการ
@@ -278,6 +286,8 @@ Git safety:
 - Service Worker: bump `CACHE` ใน `sw.js` เมื่อแก้ assets/cache behavior
 - Firestore Rules: copy และ Publish ผ่าน Firebase Console หลัง review; ถ้า runtime เพิ่ม subcollection ใหม่ต้อง Publish Rules ที่รองรับก่อน deploy เว็บ มิฉะนั้น client ทุกเครื่องจะได้ `permission-denied`
 - Android: bump version, update `version.json`, commit, tag release และ push tags
+- **Product Branch Master ต้องอัปทีละสาขา 4 รอบ** (SRC/KKL/SSS/WH) — สลับสาขาก่อนอัปทุกครั้งและตรวจชื่อสาขาบนหัวจอ
+  ไฟล์ลงที่ `{branch}_pm` ของ**สาขาที่เลือกอยู่ตอนนั้น** อัปผิดสาขา = catalog สาขานั้นผิดทันทีผ่าน listener
 - หลังแก้ behavior ให้ update `CLAUDE.md` หรือ skill ที่เกี่ยวข้อง เพื่อไม่ให้ agent รอบถัดไปย้อน Bug เดิม
 
 Baseline ขณะเขียนเอกสารนี้คือ `30c57ca` (`Move pharmacy confirmation to desktop`) ให้ตรวจ commit ล่าสุดทุกครั้ง เพราะเอกสารนี้อาจตามหลังโค้ดในอนาคต

@@ -16,13 +16,16 @@ async function scanTimes(page, barcode, times) {
 async function seedScannedItems(pda) {
   await scanTimes(pda.page, 'B-NORM', 10);  // S-NORM sys 10 → pass
   await scanTimes(pda.page, 'B-F05', 3);    // S-F05  sys 5  → audit (mismatch)
-  await scanTimes(pda.page, 'B-NEG', 3);    // S-NEG negSys: 1st scan records 0, then +1+1 → 2 → stock_adjustment
+  await scanTimes(pda.page, 'B-NEG', 3);    // S-NEG negSys: บวกปกติ → 3 → audit (ระบบติดลบ = ต้องให้เภสัชดูชั้นจริง)
+  await scanTimes(pda.page, 'B-ZERO', 1);   // S-ZERO sys 0: บวก 1 ตามปกติ (ไม่มีกฎนับ 0 แล้ว) → audit
   await pda.page.waitForFunction(() => state.scanData.get('S-NORM')?.countedQty === 10 &&
-    state.scanData.get('S-F05')?.countedQty === 3 && state.scanData.get('S-NEG')?.countedQty === 2,
+    state.scanData.get('S-F05')?.countedQty === 3 && state.scanData.get('S-NEG')?.countedQty === 3 &&
+    state.scanData.get('S-ZERO')?.countedQty === 1,
     null, { polling: 100 });
   await pda.page.evaluate(() => _flushDirtySkus());
   await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NORM', (d) => d && d.countedQty === 10);
-  await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NEG', (d) => d && d.countedQty === 2);
+  await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NEG', (d) => d && d.countedQty === 3);
+  await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-ZERO', (d) => d && d.countedQty === 1);
 }
 
 test.describe('pharmacy Confirm รอบแรก (schema v2)', () => {
@@ -39,13 +42,20 @@ test.describe('pharmacy Confirm รอบแรก (schema v2)', () => {
 
     await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NORM', (d) => d && d.status === 'pass', { timeout: 25000 });
     const f05 = await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-F05', (d) => d && d.status === 'audit');
-    const neg = await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NEG', (d) => d && d.status === 'stock_adjustment');
+    // ระบบติดลบ + ระบบ 0 ที่ยิงมา → ต้องได้ audit ให้เภสัชไปดูของบนชั้นจริง
+    // ห้ามลัดไป stock_adjustment (negSys) และห้ามเป็น pass
+    const neg = await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-NEG', (d) => d && d.status === 'audit');
+    const zero = await waitForDoc(PROJECT_ID, 'stock_sessions/SRC/items/S-ZERO', (d) => d && d.status === 'audit');
     expect(f05.countedQty).toBe(3);
-    expect(neg.auditStatus).toBe('stock_adjustment');
+    expect(neg.auditStatus).toBe('pending');
+    expect(neg.countedQty).toBe(3);
+    expect(zero.countedQty).toBe(1);
 
     // audit worklist marker written before local apply
     const markers = await getDoc(PROJECT_ID, 'stock_sessions/SRC_pharmacy_audit_markers');
     expect(Object.keys(markers.items || {})).toContain('S-F05');
+    expect(Object.keys(markers.items || {})).toContain('S-ZERO');
+    expect(Object.keys(markers.items || {})).toContain('S-NEG');
     expect(markers.countResetAt).toBe(desk.epoch);
 
     // lock released in finally

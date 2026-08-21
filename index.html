@@ -238,7 +238,6 @@
 
     .tag-unknown { font-size:0.65rem; padding:1px 6px; border-radius:3px; background:rgba(107,63,160,0.12); color:var(--purple); margin-left:4px; }
     .tag-del { font-size:0.65rem; padding:1px 6px; border-radius:3px; background:rgba(220,38,38,0.1); color:#dc2626; margin-left:4px; font-weight:700; }
-    .tag-p { font-size:0.65rem; padding:1px 6px; border-radius:3px; background:rgba(107,63,160,0.12); color:#6b3fa0; margin-left:4px; font-weight:700; }
     .progress-bar { height:8px; background:var(--surface3); border-radius:4px; margin-top:8px; overflow:hidden; }
     .progress-fill { height:100%; background:linear-gradient(90deg,var(--accent),var(--green)); background-size:200% 100%; border-radius:4px; transition:width 0.4s ease; animation:progressShimmer 2s linear infinite; }
     @keyframes progressShimmer { 0%{background-position:200% 0;} 100%{background-position:-200% 0;} }
@@ -267,7 +266,7 @@
       .header .btn{padding:3px 6px!important;font-size:0.58rem!important;gap:2px;white-space:nowrap;flex-shrink:0;}
       .db-status{font-size:0.58rem;gap:3px;flex-shrink:0;}
       .db-dot{width:5px;height:5px;}
-      .stats-bar{grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:3px;}
+      .stats-bar{grid-template-columns:repeat(6,1fr);gap:3px;margin-bottom:3px;}
       .stat-card{padding:5px 7px;border-radius:7px;}
       .stat-label{font-size:0.55rem;margin-bottom:2px;}
       .stat-value{font-size:1.05rem;}
@@ -334,11 +333,12 @@
       .header>div:last-child>div:nth-child(2){display:flex!important;align-items:center;}
       .header>div:last-child>div:nth-child(2)>button{display:none;}
 
-      /* Stats: show Total SKU, Counted, Pass, Audit as a compact 2x2 grid */
+      /* Stats: show Total SKU, Counted, Pass, Audit as a compact 2x2 grid
+         ลำดับการ์ด (ส.ค. 2026 หลังลบ SKU BRANCH): 1=Total 2=Counted 3=Pass 4=Audit 5=Not in System 6=Progress
+         → ซ่อน 5,6 · ถ้าเพิ่ม/ลบการ์ดอีก ต้องไล่เลข nth-child ใหม่ทั้งบล็อก */
       .stats-bar{grid-template-columns:1fr 1fr;gap:3px;margin-bottom:2px;flex-shrink:0;}
-      .stats-bar>.stat-card:nth-child(2),
-      .stats-bar>.stat-card:nth-child(6),
-      .stats-bar>.stat-card:nth-child(7){display:none;}
+      .stats-bar>.stat-card:nth-child(5),
+      .stats-bar>.stat-card:nth-child(6){display:none;}
       .stat-card{padding:2px 6px;}
       .stat-value{font-size:0.72rem;}
       .stat-label{font-size:0.44rem;margin-bottom:0;}
@@ -438,13 +438,12 @@
   <!-- Stats -->
   <div class="stats-bar">
     <div class="stat-card" id="statCardTotal"><div class="stat-label">Total SKU</div><div class="stat-value blue" id="statTotal">0</div></div>
-    <div class="stat-card" id="statCardBranch"><div class="stat-label">SKU BRANCH</div><div class="stat-value orange" id="statBranchSku">—</div></div>
     <div class="stat-card"><div class="stat-label" id="statCountedLabel">Counted</div><div class="stat-value blue" id="statCounted">0</div></div>
     <div class="stat-card"><div class="stat-label">Pass</div><div class="stat-value green" id="statPass">0</div></div>
     <div class="stat-card"><div class="stat-label" id="statAuditLabel">Audit</div><div class="stat-value red" id="statFail">0</div><div id="statAuditSub" style="font-size:0.62rem;color:var(--text3);margin-top:1px;display:none;"></div><div id="auditProgressWrap" style="display:none;margin-top:5px;width:100%;"><div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span id="auditProgressLabel" style="font-size:0.58rem;color:var(--text3);">เภสัชตรวจแล้ว</span><span id="auditProgressPct" style="font-size:0.58rem;color:var(--text3);">0%</span></div><div style="width:100%;height:5px;background:rgba(217,48,37,0.15);border-radius:3px;overflow:hidden;"><div id="auditProgressFill" style="height:100%;border-radius:3px;transition:width 0.4s,background 0.4s;width:0%;background:var(--red);"></div></div></div></div>
 
     <div class="stat-card"><div class="stat-label">Not in System</div><div class="stat-value purple" id="statUnknown">0</div></div>
-    <div class="stat-card" id="progressCard" onclick="toggleProgressMode()">
+    <div class="stat-card" id="progressCard">
       <div class="stat-label" id="progressModeLabel">Progress</div>
       <div class="stat-value yellow" id="statPct">0%</div>
       <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
@@ -503,7 +502,7 @@
               <strong style="color:var(--purple);display:block;margin-bottom:5px;">🔒 Admin เท่านั้น</strong>
               <ul style="padding-left:16px;margin:0;">
                 <li><strong>R05.106</strong> — Barcode สินค้า: รายงาน R05.106 → สร้างรายงาน → ส่งออก .CSV</li>
-                <li style="margin-top:3px;"><strong>Product Master</strong> — ชื่อสินค้า (ใช้ร่วมทุกสาขา)</li>
+                <li style="margin-top:3px;"><strong>Product Master</strong> — ชื่อสินค้าของสาขานี้ (แยกไฟล์ต่อสาขา ต้องอัปทีละสาขา)</li>
                 <li style="margin-top:3px;">Admin mode ปิด time-gate R01 และปิดการ sync Firestore</li>
               </ul>
             </div>
@@ -522,7 +521,7 @@
         <div id="pmUploadSection" style="display:none">
         <input type="file" id="fileProductMaster" accept=".csv,.xlsx,.xls" style="display:none" onchange="loadProductMaster(event)">
         <div class="upload-file-item" onclick="var _f=document.getElementById('fileProductMaster');_f.value='';_f.click()">
-          <div class="upload-file-info"><div class="upload-file-icon"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="9" height="12" rx="1.5" fill="#7C6FF7"/><rect x="4" y="4" width="5" height="1" rx="0.5" fill="white" opacity="0.8"/><rect x="4" y="6" width="5" height="1" rx="0.5" fill="white" opacity="0.8"/><rect x="4" y="8" width="3" height="1" rx="0.5" fill="white" opacity="0.8"/><path d="M9 1l3 3h-3V1z" fill="#5B52D6"/></svg></div><div><div class="upload-file-name">Product Master</div><div class="upload-file-sub">ชื่อสินค้า (ทุกสาขา)</div><div id="pmTimestamp" class="upload-file-ts" style="display:none"></div></div></div>
+          <div class="upload-file-info"><div class="upload-file-icon"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="9" height="12" rx="1.5" fill="#7C6FF7"/><rect x="4" y="4" width="5" height="1" rx="0.5" fill="white" opacity="0.8"/><rect x="4" y="6" width="5" height="1" rx="0.5" fill="white" opacity="0.8"/><rect x="4" y="8" width="3" height="1" rx="0.5" fill="white" opacity="0.8"/><path d="M9 1l3 3h-3V1z" fill="#5B52D6"/></svg></div><div><div class="upload-file-name">Product Master</div><div class="upload-file-sub">ชื่อสินค้า (ของสาขานี้)</div><div id="pmTimestamp" class="upload-file-ts" style="display:none"></div></div></div>
           <div class="upload-file-badge"><div class="upload-file-badge-dot"></div><span id="badgeProductMaster">ยังไม่โหลด</span></div>
         </div>
         </div>
@@ -741,11 +740,9 @@
       <button class="popup-filter" onclick="setPopupFilter('pass',this)"><span>✅</span><span>Pass</span></button>
 
       <button class="popup-filter" onclick="setPopupFilter('audit',this)"><span>⚠️</span><span id="popupFilterAuditLabel">Audit</span></button>
-      <button class="popup-filter" onclick="setPopupFilter('cata',this)"><span>🅰️</span><span>CAT[A]</span></button>
 
       <button class="popup-filter" onclick="setPopupFilter('unknown',this)"><span>❓</span><span>Unknown</span></button>
       <button class="popup-filter" onclick="setPopupFilter('del',this)"><span>🗑️</span><span>DEL</span></button>
-      <button class="popup-filter" onclick="setPopupFilter('p',this)"><span>🏷️</span><span>P</span></button>
       <button class="popup-filter" onclick="setPopupFilter('pending',this)"><span>⏳</span><span>รอนับ</span></button>
     </div>
     <div class="stock-popup-toolbar" id="popupStaffFilterRow" style="display:none;padding-top:0;"></div>
@@ -1206,7 +1203,13 @@ function _isPharmacyBranch(){return currentBranch==='SRC'||currentBranch==='KKL'
 function initFirebase(){if(!firebase.apps.length)firebase.initializeApp(FIREBASE_CONFIG);_db=firebase.firestore();}
 function getSessionId(){return currentBranch;}
 function lsKey(){return`stockCountSession_${currentBranch||'default'}`;}
-function getProductMasterMetaRef(){return _db.collection('stock_sessions').doc('global_pm');}
+// Product Branch Master — 1 doc ต่อสาขา (SRC_pm/KKL_pm/SSS_pm/WH_pm) รวม WH
+// ⚠️ ไม่มี fallback ไป `global_pm` โดยเจตนา: สาขาที่ยังไม่อัป PBM ต้องเห็น badge "ยังไม่โหลด"
+//    ไม่ใช่หยิบ catalog ของสาขาอื่นมาใช้เงียบๆ · `global_pm` เดิมยังอยู่บน cloud เพื่อ rollback ห้ามลบ
+function getProductMasterMetaRef(branch=currentBranch){
+  if(!_db||!branch)return null;
+  return _db.collection('stock_sessions').doc(`${branch}_pm`);
+}
 function getR05Ref(){return _db.collection('stock_sessions').doc('global_r05');}
 function getWhCountInboxRef(){return _db.collection('stock_sessions').doc('WH_counts');}
 function getWhCountConfirmationRef(){return _db.collection('stock_sessions').doc('WH_count_confirmations');}
@@ -1247,8 +1250,9 @@ function _scanItemPayload(sku,sd,rev){
 }
 // แปลง item doc → รูปแบบที่ state.scanData ใช้
 // runtime field (scans/retries/manualEditAt) ต้องคงของเดิมในเครื่องไว้ ห้ามรีเซ็ตเป็นค่าว่าง
-// — `scans` ถูกอ่านโดย _zeroSysFirstScan (สาขายา: negSys/systemQty=0 สแกนครั้งแรก = นับ 0)
-//   ถ้าถูกล้างตอน echo กลับมา สินค้าตัวเดิมจะถูกมองว่า "สแกนครั้งแรก" ซ้ำแล้วบันทึก 0 อีกรอบ
+// — `scans` = ประวัติการยิงทีละครั้งของเครื่องนี้ (บาร์โค้ด/จำนวน/เวลา) ใช้ไล่ย้อนตอนยอดไม่ตรง
+//   ถ้าล้างทิ้งตอน echo กลับมา ประวัติหายโดยไม่มีทางกู้ (ไม่ได้ sync ขึ้น cloud — ถูก strip ใน SCAN_ITEM_LOCAL_FIELDS)
+//   หมายเหตุ ส.ค. 2026: เดิมมี _zeroSysFirstScan อ่าน field นี้ตัดสิน "สแกนครั้งแรก" ด้วย — กฎนั้นถูกถอดออกแล้ว
 function _scanItemToLocal(data,existing){
   const{sku,rev,updatedAt,updatedBy,countResetAt,...keep}=data||{};
   const out={scannedBy:'',auditor:'',
@@ -2542,18 +2546,21 @@ function applyProductMasterMeta(pmMeta){
   else if(state.productMasterData.length){_setPmTs('พร้อมใช้งาน');}
 }
 function startProductMasterListener(){
-  if(!_db||!_pinVerified)return;
+  if(!_db||!_pinVerified||!currentBranch)return;
   stopProductMasterListener();
-  _pmUnsubscribe=getProductMasterMetaRef().onSnapshot(doc=>{
+  const ref=getProductMasterMetaRef();
+  if(!ref)return;
+  const branch=currentBranch;
+  _pmUnsubscribe=ref.onSnapshot(doc=>{
     if(!doc.exists)return;
     const prevTs=state.productMasterUploadedAt||'';
     applyProductMasterMeta(doc.data());
     if(_pmListenerReady&&state.productMasterUploadedAt&&state.productMasterUploadedAt!==prevTs){
       saveSession();
-      toast(`Product Master อัปเดตล่าสุด ${state.productMasterUploadedAt}`,'info');
+      toast(`Product Master (${branch}) อัปเดตล่าสุด ${state.productMasterUploadedAt}`,'info');
     }
     _pmListenerReady=true;
-  },err=>console.warn('Firestore product master listen:',err.message));
+  },err=>console.warn('Firestore product branch master listen:',err.message));
 }
 // ─── R05 real-time sync (global — ใช้ร่วมทุกสาขา, mirror PM) — อัพ R05 เครื่องนึง → ทุกสาขาเห็นทันที ───
 // เก็บบน cloud เป็น array-of-arrays ไม่ใช่ object: ชื่อ field ซ้ำทุกแถว ~57 bytes × 10,600 บาร์โค้ด
@@ -2734,7 +2741,6 @@ document.addEventListener('visibilitychange',()=>{
   if(runStaleGuard()>0)syncToFirestore();
 });
 async function initAfterLogin(){
-  _progressMode=(currentBranch!=='WH'&&localStorage.getItem('progressMode_'+currentBranch)==='catA')?'catA':'all';
   _resetWhSupervisorFilter();
   const _startEmpty=window.innerWidth<=600&&(currentBranch==='WH'||currentRole==='assistant');
   // เภสัช Desktop: โหลดสินค้า Audit จาก cloud ใช้เวลา → แสดง loader ด้วย (ไม่ใช่ startEmpty — ไม่ clear scan list)
@@ -2921,22 +2927,42 @@ function loadProductMaster(event) {
   const file=event.target.files[0]; if(!file)return;
   parseFile(file,rows=>{
     state.productMasterData=[]; let sk=0,priced=0;
-    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const sku=(r[0]??'').toString().trim();const name=(r[1]??'').toString().trim();const colD=(r[3]??'').toString().trim().toUpperCase();if(!sku){sk++;continue;}if(colD==='REVIEW'){sk++;continue;}const cat=colD==='A'?'A':(colD==='P'?'P':'');const unitPrice=_parseProductMasterPrice(r[9]);if(unitPrice!==null)priced++;state.productMasterData.push({sku,productName:name,unitPrice,...(cat?{cat}:{})});}
+    // Col D filter (ส.ค. 2026): ข้าม D / P / REVIEW — เดิมข้ามเฉพาะ REVIEW แล้วติดแท็ก cat A/P
+    // SKU ที่ถูกข้ามแต่ยังมีสต็อกใน R01 จะกลายเป็น DEL ใน rebuildMaps และ "ยังนับใน Progress ตามปกติ"
+    // (ตัวหาร Progress ดู R01 อย่างเดียว ไม่ intersect กับ PBM — ดู _countableSkus)
+    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const sku=(r[0]??'').toString().trim();const name=(r[1]??'').toString().trim();const colD=(r[3]??'').toString().trim().toUpperCase();if(!sku){sk++;continue;}if(colD==='D'||colD==='P'||colD==='REVIEW'){sk++;continue;}const unitPrice=_parseProductMasterPrice(r[9]);if(unitPrice!==null)priced++;state.productMasterData.push({sku,productName:name,unitPrice});}
     state.productMasterMap.clear();
     state.productMasterData.forEach(r=>state.productMasterMap.set(r.sku,r.productName));
     document.getElementById('badgeProductMaster').textContent='Ready';
     document.getElementById('fileProductMaster').nextElementSibling.style.borderColor='var(--green)';
     const _pmNow=new Date();_setPmTs(`${String(_pmNow.getHours()).padStart(2,'0')}:${String(_pmNow.getMinutes()).padStart(2,'0')} น. ${String(_pmNow.getDate()).padStart(2,'0')}/${String(_pmNow.getMonth()+1).padStart(2,'0')}/${_pmNow.getFullYear()}`);
     rebuildMaps();
-    toast(`Product Master: ${state.productMasterData.length} รายการ · พบราคา ${priced}`+(sk?` (ข้าม ${sk})`:''),'success');
+    toast(`Product Master (${currentBranch}): ${state.productMasterData.length} รายการ · พบราคา ${priced}`+(sk?` (ข้าม ${sk})`:''),'success');
     saveSession(); syncProductMasterToFirestore();
   });
 }
+
+// ─── R01 คอลัมน์ P (index 15) = หมวดสินค้า — หมวดที่ "ไม่ใช่สินค้าคงคลัง" ไม่ต้องนับ (ส.ค. 2026) ───
+// SKU เหล่านี้ยังอยู่ในระบบครบ: สแกนได้ · Confirm ได้ผลถูกต้อง · เห็นในรายการสินค้า
+// ตัดออกเฉพาะจาก `_countableSkus` → ไม่อยู่ใน Total SKU และไม่อยู่ใน Progress ทั้งตัวเศษและตัวหาร
+// เพิ่มหมวดใหม่ = เติมใน 2 array ด้านล่างที่เดียว
+const R01_NON_COUNT_PREFIXES=['11.'];      // '11. อุปกรณ์สำนักงาน / ค่าใช้จ่าย / ขนส่ง' — เทียบเฉพาะเลขหมวดนำหน้า
+const R01_NON_COUNT_KEYWORDS=['DELETE'];   // หมวดที่ถูกทำเครื่องหมายลบ — เทียบแบบ "มีคำนี้อยู่"
+function _isNonCountR01Category(colP){
+  // เทียบด้วยเลขหมวดนำหน้า/คำสำคัญ ไม่เทียบข้อความเต็ม — ชื่อหมวดในไฟล์จริงมีช่องว่าง/วรรคตอนไม่คงที่
+  const v=(colP??'').toString().trim().toUpperCase();
+  if(!v)return false;
+  return R01_NON_COUNT_PREFIXES.some(p=>v.startsWith(p))||R01_NON_COUNT_KEYWORDS.some(k=>v.includes(k));
+}
+
 function loadR01(event) {
   const file=event.target.files[0]; if(!file)return;
   parseFile(file,rows=>{
-    state.r01Data=[]; let sk=0;
-    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const e=(r[4]??'').toString().trim();const f=(r[5]??'').toString().trim();const g=(r[6]??'').toString().replace(/,|\s/g,'').trim();if(!e){sk++;continue;}if(g===''||!isFinite(+g)){sk++;continue;}const qty=+g;state.r01Data.push({colE:e,productName:f,systemQty:qty});}
+    state.r01Data=[]; let sk=0,nc=0;
+    // คอลัมน์ P (index 15) = หมวดสินค้า · หมวดที่ไม่ใช่สินค้าคงคลังจะติดธง `nc` ไว้ (ดู _isNonCountR01Category)
+    // เก็บแค่ธง ไม่เก็บข้อความหมวด — r01Data ถูก JSON.stringify ลง {branch}_r01 ซึ่งมีเพดาน 1 MiB
+    // (ข้อความหมวดภาษาไทย ~45 ตัวอักษร × 5,400 แถว ≈ 750 KB จะชนเพดานทันที)
+    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const e=(r[4]??'').toString().trim();const f=(r[5]??'').toString().trim();const g=(r[6]??'').toString().replace(/,|\s/g,'').trim();if(!e){sk++;continue;}if(g===''||!isFinite(+g)){sk++;continue;}const qty=+g;const nonCount=_isNonCountR01Category(r[15]);if(nonCount)nc++;state.r01Data.push({colE:e,productName:f,systemQty:qty,...(nonCount?{nc:1}:{})});}
     document.getElementById('badgeR01').textContent='Ready';
     document.getElementById('fileR01').nextElementSibling.style.borderColor='var(--green)';
     const r01Now=new Date();state.r01Version=r01Now.toISOString();_setR01Ts(formatThaiDateTime(r01Now));
@@ -2950,7 +2976,7 @@ function loadR01(event) {
       // R16 ทุกชุดผูกกับ r01Version — อัป R01 ใหม่ต้องรออัป R16.104/103 ชุดเดียวกันก่อน Confirm
       _clearWhR16Kind('104');_clearWhR16Kind('103');_clearWhR16TimelineSnapshot();
     }
-    let r01Msg=`R01.102: ${state.r01Data.length} รายการ`+(sk?` (ข้าม ${sk})`:'');
+    let r01Msg=`R01.102: ${state.r01Data.length} รายการ`+(sk?` (ข้าม ${sk})`:'')+(nc?` · ไม่นับ ${nc} (หมวดไม่ใช่สินค้า)`:'');
     if(_isPharmacyBranch())r01Msg+=' · ล้าง R16 เดิมแล้ว — อัพ R16 วันนี้ก่อน Confirm (Audit เดิมรอเภสัชตรวจ)';
     else if(currentBranch==='WH')r01Msg+=' · กรุณาอัปโหลด R16.104/103 ชุดใหม่ก่อน Confirm';
     toast(r01Msg,'success'); saveSession(); syncMasterToFirestore(false,true);
@@ -3280,7 +3306,8 @@ async function reEvaluateAuditItems(opts={}){
     const inboundQty=getInboundQtyBefore(sku,sd.timestamp);
     const r16103Qty=getR16103QtyBefore(sku,sd.timestamp);
     const effectiveCnt=sd.countedQty+soldQty+r16103Qty-inboundQty;
-    const newStatus=effectiveCnt===si.systemQty?'pass':(si.negSys?'stock_adjustment':'audit');
+    // negSys บังคับเป็น audit เสมอ (ต้องตรงกับ _buildPendingScanEvaluation ไม่งั้นอัพ R16 ใหม่แล้วสถานะแกว่ง)
+    const newStatus=si.negSys?'audit':(effectiveCnt===si.systemQty?'pass':'audit');
     if(newStatus===sd.status)continue; // ไม่เปลี่ยน ข้ามไป
     const before={...sd};sd.status=newStatus;
     sd.auditStatus=newStatus==='pass'?'approved':(newStatus==='stock_adjustment'?'stock_adjustment':'pending');
@@ -3409,7 +3436,8 @@ async function clearAllData() {
   // ลบ items subcollection ก่อนลบ session doc — Firestore ไม่ลบ subcollection ตาม parent ให้อัตโนมัติ
   if(_db&&currentBranch){try{await _deleteAllScanItems();}catch(e){console.warn('[clearAllData] clear items:',e.message);}if(currentBranch==='WH'){try{await _deleteAllWhConfirmOps();}catch(e){console.warn('[clearAllData] clear WH confirm ops:',e.message);}}}
   if(_db&&currentBranch==='WH'){try{await _clearWhR16CloudTimelines();}catch(e){console.warn('[clearAllData] clear WH R16 chunks:',e.message);}}
-  // _r05 ไม่ลบ cloud — global doc ใช้ร่วมทุกสาขาแล้ว (เหมือน global_pm ที่ก็ไม่ลบตรงนี้), ล้างแค่ local เดี๋ยว resync กลับตอน reload
+  // _r05 ไม่ลบ cloud — global doc ใช้ร่วมทุกสาขา, ล้างแค่ local เดี๋ยว resync กลับตอน reload
+  // {branch}_pm ก็ไม่ลบเช่นกัน — เป็น catalog ของสาขา ไม่ใช่ข้อมูลรอบนับ (อัปทับได้จาก Admin Mode)
   if(_db&&currentBranch){const id=getSessionId();try{const deletes=[_db.collection('stock_sessions').doc(id).delete(),_db.collection('stock_sessions').doc(id+'_master').delete(),_db.collection('stock_sessions').doc(id+'_r01').delete()];if(_isPharmacyBranch())deletes.push(getPharmacyAuditMarkerRef().delete());if(currentBranch==='WH')deletes.push(getWhCountInboxRef().delete(),getWhCountConfirmationRef().delete(),getWhRecheckInboxRef().delete(),getWhRecheckConfirmationRef().delete());await Promise.all(deletes);}catch(e){console.warn('Firestore delete:',e.message);}}
   state.scanData.clear();state.unknownScans=[];scanListMap.clear();
   state.r01Data=[];state.r01Version='';state.r05Data=[];state.r16Data=[];state.r16SalesMap.clear();state.r16RawMap.clear();state.r16InboundMap.clear();state.r16InboundRawMap.clear();state.r16Loaded=false;state.r16DateMismatch=false;
@@ -3835,26 +3863,35 @@ window.addEventListener('DOMContentLoaded',async()=>{
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)_updateHeartbeat();});
 });
 
-let _cachedBranchSku=null;
-let _cachedCatA=null; // {set:Set<sku>, denom:number} ของ Col D='A' (สาขาเท่านั้น) — recompute พร้อม _cachedBranchSku
-let _progressMode='all'; // 'all' | 'catA' — โหมด Progress bar (สาขาเท่านั้น), โหลดจาก localStorage ตอน login
 let _cachedActiveSkus=[];
 let _cachedTotalSku=0;
+// SKU ที่ "ต้องนับ" = SKU ใน R01.102 ที่ systemQty ≠ 0 (ส.ค. 2026)
+// ตัวเศษกับตัวหารของ Progress ใช้ชุดนี้ชุดเดียว → ตัวเศษ ⊆ ตัวหารเสมอ เกิน 100% ไม่ได้
+// (เดิมตัวเศษวนจาก scanData แต่ตัวหารนับจาก r01Data คนละแหล่ง)
+// ⚠️ ต้องอ่านจาก state.r01Data (ค่าดิบ) ห้ามใช้ skuMap.systemQty — สาขายา clamp negSys เป็น 0 ไปแล้ว
+//    ถ้าใช้ skuMap จะแยก "G=0 จริง (ไม่ต้องนับ)" กับ "G ติดลบ (ต้องนับ = ขายของขาด)" ไม่ออก
+// PBM ไม่มีผลกับชุดนี้: SKU ที่ Col D=D/P ถูกกรองออกจาก PBM แต่ยังมีสต็อกใน R01 ต้องนับตามปกติ
+let _countableSkus=new Set();
 function rebuildMaps() {
-  _cachedBranchSku=null;
   _cachedActiveSkus=[];
   _cachedTotalSku=0;
+  _countableSkus=new Set();
   state.skuMap.clear();state.barcodeMap.clear();
   state.skuDirectMap = new Map();
+  const qtyMap=new Map();const r01NameMap=new Map();const nonCountSkus=new Set();
+  // `nc` = หมวดใน R01 คอลัมน์ P ที่ไม่ใช่สินค้าคงคลัง (ติดธงตอน loadR01) — sticky: แถวไหนติดธง SKU นั้นไม่นับ
+  state.r01Data.forEach(r=>{qtyMap.set(r.colE,r.systemQty);if(r.productName)r01NameMap.set(r.colE,r.productName);if(r.nc)nonCountSkus.add(r.colE);});
+  // คำนวณก่อน early-return ของ R05 — ไม่งั้นเครื่องที่ R05 ยังมาไม่ถึงจะโชว์ Total SKU = 0
+  qtyMap.forEach((q,sku)=>{if(q!==0&&!nonCountSkus.has(sku))_countableSkus.add(sku);});
+  _cachedTotalSku=_countableSkus.size;
   if(!state.r05Data.length)return;
-  const qtyMap=new Map();const r01NameMap=new Map();
-  state.r01Data.forEach(r=>{qtyMap.set(r.colE,r.systemQty);if(r.productName)r01NameMap.set(r.colE,r.productName);});
   const skuSource=state.productMasterData.length?state.productMasterData:state.r01Data.map(r=>({sku:r.colE,productName:r.productName}));
   // สาขายา: systemQty ติดลบ → มองเป็น 0 + flag negSys (Confirm แล้วเข้า stock_adjustment ตรง ไม่รอเภสัช verify) — WH เก็บค่าติดลบจริง
   const _clampNeg=_isPharmacyBranch();
-  skuSource.forEach(r=>{if(!state.skuMap.has(r.sku)){const pn=r.productName||r01NameMap.get(r.sku)||r.sku;const q0=qtyMap.get(r.sku)??0;const neg=_clampNeg&&q0<0;state.skuMap.set(r.sku,{sku:r.sku,productName:pn,unitPrice:_parseProductMasterPrice(r.unitPrice),systemQty:neg?0:q0,negSys:neg,barcodes:[],isDel:false,isP:r.cat==='P',cat:r.cat||''});}});
-  // R01 items not in Product Master → DEL (ถูกตัดออกจาก PM แต่ยังมีสต็อกจริง)
-  if(state.productMasterData.length&&state.r01Data.length){const pmSet=new Set(state.productMasterData.map(r=>r.sku));state.r01Data.forEach(r=>{if(!pmSet.has(r.colE)&&!state.skuMap.has(r.colE)){const neg=_clampNeg&&r.systemQty<0;state.skuMap.set(r.colE,{sku:r.colE,productName:r.productName||r.colE,unitPrice:null,systemQty:neg?0:r.systemQty,negSys:neg,barcodes:[],isDel:true,cat:''});}});}
+  skuSource.forEach(r=>{if(!state.skuMap.has(r.sku)){const pn=r.productName||r01NameMap.get(r.sku)||r.sku;const q0=qtyMap.get(r.sku)??0;const neg=_clampNeg&&q0<0;state.skuMap.set(r.sku,{sku:r.sku,productName:pn,unitPrice:_parseProductMasterPrice(r.unitPrice),systemQty:neg?0:q0,negSys:neg,barcodes:[],isDel:false});}});
+  // R01 items not in Product Branch Master → DEL (ถูกตัดออกจาก PBM แต่ยังมีสต็อกจริง)
+  // รวม SKU ที่ Col D=D/P ซึ่งถูกกรองออกตั้งแต่ตอน parse — ยังสแกน/Confirm/นับใน Progress ได้ตามปกติ
+  if(state.productMasterData.length&&state.r01Data.length){const pmSet=new Set(state.productMasterData.map(r=>r.sku));state.r01Data.forEach(r=>{if(!pmSet.has(r.colE)&&!state.skuMap.has(r.colE)){const neg=_clampNeg&&r.systemQty<0;state.skuMap.set(r.colE,{sku:r.colE,productName:r.productName||r.colE,unitPrice:null,systemQty:neg?0:r.systemQty,negSys:neg,barcodes:[],isDel:true});}});}
   state.r05Data.forEach(r=>{if(state.skuMap.has(r.colE)){state.skuMap.get(r.colE).barcodes.push({barcode:r.barcode,unitName:r.unitName,unitMultiplier:r.unitMultiplier,unitPrice:r.unitPrice});state.barcodeMap.set(r.barcode,r.colE);}});
   // กฎราคาย้ายมาที่ R05 Col B (ก.ค. 2026): ราคาผูกกับ "บาร์โค้ด" ไม่ใช่ SKU
   // skuInfo.unitPrice = ราคาของบาร์โค้ดหน่วยเล็กสุด ใช้คุมช่อง QTY ในแถว/ป็อปอัพ (ซึ่งเป็นยอดรวมหน่วยย่อย)
@@ -3863,7 +3900,6 @@ function rebuildMaps() {
   buildSkuDirectMap();
   const active=[...state.skuMap.keys()];
   _cachedActiveSkus=active;
-  _cachedTotalSku=state.productMasterData.length||active.length;
   active.forEach(sku=>{if(!state.scanData.has(sku))state.scanData.set(sku,{countedQty:0,status:'pending',retries:0,timestamp:'',scannedBy:'',auditor:'',auditStatus:'pending',barcode:'',location:'',scans:[]});});
   updateStats();renderTable();invalidatePopupRowsCache();
 }
@@ -4700,7 +4736,8 @@ let _scanGapHold=null;
 let _zeroSysHold=null;
 
 // [dead code ก.ค. 2026] เดิม: modal ถาม "มีของจริงไหม" ตอนสแกนสินค้าระบบ = 0/negSys ครั้งแรก
-// ถอดออกตามคำขอ — สแกนครั้งแรกบันทึกนับ 0 ให้เลย (ดู _zeroSysFirstScan ใน handleBarcode) ไม่ขัดจังหวะการสแกน
+// ก.ค. 2026 ถอด modal → แทนด้วยกฎ "สแกนครั้งแรกนับ 0" (`_zeroSysFirstScan`)
+// ส.ค. 2026 ถอดกฎนับ 0 ออกอีกชั้น — ทั้งระบบ 0 และติดลบสแกนแล้วบวกตามปกติ (ดู handleBarcode)
 // เก็บฟังก์ชัน + modal HTML + guard `_zeroSysHold` ไว้ทุกจุด (pattern เดียวกับ _scanGapHold) — ห้ามลบ guard
 function showZeroSysModal(sku){
   const info=state.skuMap.get(sku);
@@ -5004,15 +5041,17 @@ function handleBarcode(parsed,immediateRender=true){
     return;
   }
 
-  // สาขายา: สแกนครั้งแรกของสินค้าที่ระบบ = 0/ติดลบ (negSys) = สแกนป้ายชั้นวางเพื่อยืนยันว่า "เช็คแล้วไม่มีของ" → บันทึกนับ 0
-  // (เดิมเด้ง zeroSysModal ถามมีของจริงไหม — ถอดออก ก.ค. 2026 ตามคำขอ ให้สแกนต่อได้ทันที ไม่ขัดจังหวะ)
-  // นับ 0 → Confirm แล้ว pass เข้า progress · ถ้ามีของจริงให้สแกนซ้ำ ครั้งที่ 2 เป็นต้นไปบวกตามปกติ (นับ 3 ชิ้น = สแกน 4 ครั้ง)
-  // qty!==null ที่ผ่านกฎราคาด้านบน ข้าม zero-system first-scan rule และบันทึกจำนวนที่พิมพ์
-  const _zeroSysFirstScan=_isPharmacyBranch()&&state.r01Data.length&&qty===null&&sd.status==='pending'&&sd.countedQty===0&&!(sd.scans&&sd.scans.length)&&(skuInfo.negSys||skuInfo.systemQty===0);
+  // ⚠️ กฎ "สแกนครั้งแรกนับ 0" (`_zeroSysFirstScan`) ถูกถอดออกหมดแล้ว (ส.ค. 2026) — ห้ามนำกลับมา
+  //    เดิม: สินค้าที่ระบบ = 0 หรือติดลบ สแกนครั้งแรก = บันทึก 0 (สแกนป้ายชั้น = "เช็คแล้วไม่มีของ") → Confirm ได้ pass
+  //    - G = 0  : ถอดออกเพราะ "ไม่ต้องนับ" แล้ว — หลุดจากทั้งตัวเศษและตัวหารของ Progress (ดู _countableSkus)
+  //    - ติดลบ  : ถอดออกเพราะยอดระบบติดลบ = ข้อมูลสต็อกผิดแน่นอน ต้องให้เภสัชไปดูของบนชั้นจริงทุกตัว
+  //      → ทั้งสองกลุ่มสแกนแล้วบวกตามปกติ และ negSys ถูกบังคับเป็น `audit` เสมอใน _buildPendingScanEvaluation
+  //    `zeroSysModal`/`showZeroSysModal`/`confirmZeroSys` ยังเป็น dead code ที่ต้องเก็บไว้ และ `_zeroSysHold`
+  //    ยังเป็น hold-guard ทุกจุดคู่กับ `_scanGapHold` — **ห้ามลบ guard เหล่านั้น**
 
   // gap 2 นาที ถูกยกเลิก (ทุก branch): สแกน SKU เดิมซ้ำหลังทิ้งช่วงนานได้เลย บวกสะสมไม่ reset/ไม่เตือน
   // เดิมสาขายา (non-WH) จะเด้ง showScanGapModal ถามรีเซ็ต — ถอดออกตามคำขอ (WH ข้ามอยู่แล้ว) · modal/confirmScanGap เหลือเป็น dead code
-  const _addQty=_zeroSysFirstScan?0:(qty!==null?qty*mult:mult);
+  const _addQty=qty!==null?qty*mult:mult;
   sd.countedQty+=_addQty;
   sd.scannedBy=scannedBy;sd.auditor=auditor;sd.timestamp=now;sd.barcode=resolvedBarcode;
   if(!sd.firstScanAt)sd.firstScanAt=now; // เวลาสแกนครั้งแรกจริง (ไม่ถูกเขียนทับตอน confirm) — ใช้ใน รายงานผลลัพธ์การนับ ColA
@@ -5022,7 +5061,6 @@ function handleBarcode(parsed,immediateRender=true){
   appendScanRow(sku,resolvedBarcode,sd.countedQty,unitName,'scanning',location);
   _pendingPatches.add(sku);
   beepSuccess();
-  if(_zeroSysFirstScan)toast(`${sku}: ระบบ = 0 → บันทึกนับ 0 (มีของจริงให้สแกนซ้ำ)`,'info');
   _writeWhCountInboxItem(sku);
   _markSkuDirty(sku);
   scheduleSave();if(immediateRender){scheduleScanListRender();scheduleStats();scheduleRender();}
@@ -5105,8 +5143,12 @@ function _buildPendingScanEvaluation(sku,sd){
   const r16103Qty=getR16103QtyBefore(sku,sd.timestamp);
   const effectiveCnt=cnt+soldQty+r16103Qty-inboundQty;
   let status='audit';let auditStatus='pending';
-  if(effectiveCnt===sys){status='pass';auditStatus='approved';}
-  else if(si.negSys||(sd.noStock&&effectiveCnt===0&&sys>0)){status='stock_adjustment';auditStatus='stock_adjustment';}
+  // negSys (ยอดระบบติดลบ) = ข้อมูลสต็อกผิดแน่นอน — **บังคับเข้า audit เสมอ ไม่ว่านับได้เท่าไร** (ส.ค. 2026)
+  // ต้องเช็คก่อนสูตร pass เพราะ systemQty ถูก clamp เป็น 0 แล้ว → นับ 0 จะกลายเป็น pass โดยไม่มีใครไปดูของจริง
+  // เดิม negSys ที่นับได้ ≠ 0 ลัดไป stock_adjustment เลย — ตัดสินปรับสต็อกโดยไม่ให้เภสัชตรวจชั้นก่อน
+  if(si.negSys){/* คง audit */}
+  else if(effectiveCnt===sys){status='pass';auditStatus='approved';}
+  else if(sd.noStock&&effectiveCnt===0&&sys>0){status='stock_adjustment';auditStatus='stock_adjustment';}
   return {sku,source:sd,cnt,soldQty,inboundQty,r16103Qty,status,auditStatus};
 }
 function _applyPendingScanEvaluation(result){
@@ -5302,7 +5344,7 @@ function renderScanList(){
       <div class="scan-row-sku" title="${entry.sku}"><span class="sku-text">${entry.sku}</span>${entry.status==='scanning'?`<button class="btn-remove-row btn-remove-sku" onclick="removeScanItem('${entry.sku}')" title="ลบ / สแกนใหม่">✕</button>`:(entry.status==='audit'&&(whStaffEdit||pharmRecheckEdit))?`<button class="btn-remove-row btn-remove-sku" onclick="resetRecheckItem('${entry.sku}')" title="รีเซ็ตรีเช็ค / สแกนนับใหม่">✕</button>`:''}</div>
       <div class="scan-row-bc" title="${bcText}">${bcText}</div>
       <div class="scan-row-pn"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pn}</span></div>
-      <div class="scan-row-qty" style="color:${cls}">${entry.status==='scanning'?(_canEnterCountQty(si)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onchange="updateInlineQty('${entry.sku}',this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}"/>`:`<span style="font-weight:700">${entry.totalQty}</span>`):entry.status==='unknown'?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.status==='audit'&&whStaffEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" onblur="updateRecheckInlineQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&pharmRecheckEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="1" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}" onblur="updatePharmacyRecheckQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&(currentRole==='pharmacist'||currentRole==='supervisor'||noEditPda))?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.totalQty>10?`${entry.totalQty}`:'')}</div>
+      <div class="scan-row-qty" style="color:${cls}">${entry.status==='scanning'?(_canEnterCountQty(si)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onchange="updateInlineQty('${entry.sku}',this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}"/>`:`<span style="font-weight:700">${entry.totalQty}</span>`):entry.status==='unknown'?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.status==='audit'&&whStaffEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" onblur="updateRecheckInlineQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&pharmRecheckEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}" onblur="updatePharmacyRecheckQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&(currentRole==='pharmacist'||currentRole==='supervisor'||noEditPda))?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.totalQty>10?`${entry.totalQty}`:'')}</div>
       ${showSysQty?`<div class="scan-row-sysqty" style="text-align:center;font-size:0.78rem;color:var(--text2);padding:0 6px;">${si?.systemQty??''}</div>`:''}
       ${showLoc?`<div class="scan-row-loc" style="text-align:center;font-size:0.78rem;color:var(--text2);padding:0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${state.locationMap.get(entry.sku)||'—'}</div>`:''}
       <div class="scan-row-status"><span class="pill ${getPillClass(entry.status)}">${label}</span></div>
@@ -5346,7 +5388,7 @@ function patchScanRow(key){
     else if(entry.status==='audit'&&pharmRecheckEdit){
       const input=qtyCell.querySelector('.inline-qty-input');
       if(input){if(document.activeElement!==input)input.value=entry.totalQty;}
-      else{qtyCell.innerHTML=`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="1" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}" onblur="updatePharmacyRecheckQty('${entry.sku}',this.value)"/>`;}
+      else{qtyCell.innerHTML=`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}" onblur="updatePharmacyRecheckQty('${entry.sku}',this.value)"/>`;}
     }
     else if(entry.status==='audit'&&(currentRole==='pharmacist'||currentRole==='supervisor'||noEditPda))qtyCell.innerHTML=`<span style="font-weight:700">${entry.totalQty}</span>`;
     else qtyCell.textContent=entry.totalQty>10?entry.totalQty:'';
@@ -5388,20 +5430,23 @@ function updateRecheckInlineQty(sku,v){
 // สาขายา (เภสัช): แก้จำนวนรีเช็ค audit แบบเขียนทับ (SET) — PDA + Desktop, ไม่ใช้กฎราคา (กฎราคาครอบเฉพาะ Count รอบแรก)
 // ต่างจาก updateRecheckInlineQty ของ WH: sync ผ่าน session items (_markSkuDirty) ไม่ใช่ inbox WH_rechecks
 // และต้องตั้ง manualEditAt กัน cloud snapshot เก่าทับค่าที่เพิ่งแก้ (เหมือน _addRecheckScanQty)
-// ยอด 0 ไม่รองรับ — pending map กรอง >0 รายการจะไม่เข้าคิวยืนยัน → ขั้นต่ำ 1 ถ้าจะล้างให้ใช้ปุ่ม ✕ รีเซ็ตรีเช็ค
+// **ยอด 0 รองรับแล้ว (ส.ค. 2026)** = "เภสัชไปดูแล้วไม่มีของบนชั้น" — ต่างจาก "ยังไม่ได้รีเช็ค" (recheckQty == null)
+//   จำเป็นตั้งแต่ negSys ถูกบังคับเข้า audit ทุกตัว: ของที่ระบบติดลบมักไม่มีของจริง ถ้ากรอก 0 ไม่ได้จะค้าง audit ถาวร
+//   ล้างค่ากลับเป็น "ยังไม่รีเช็ค" ใช้ปุ่ม ✕ รีเซ็ตรีเช็ค (ไม่ใช่พิมพ์ 0)
 function updatePharmacyRecheckQty(sku,v){
   if(_blockScanForBranchConfirm())return;
   const sd=state.scanData.get(sku);
   if(!sd||sd.status!=='audit'||sd.auditor)return;
   const q=parseFloat(v);
   const prev=sd.recheckQty;
-  const shown=Number(prev)||0;
-  if(!isNaN(q)&&q===shown)return; // blur โดยไม่เปลี่ยนค่า — ไม่ต้องทำอะไร
-  if(isNaN(q)||q<1){
-    if(prev!=null){beepError();toast('ยอดรีเช็คต้องอย่างน้อย 1 — ถ้าต้องการล้างค่าให้กดปุ่ม ✕ รีเซ็ตรีเช็ค','warn');}
+  if(isNaN(q)||q<0){
+    if(prev!=null){beepError();toast('ยอดรีเช็คต้องเป็น 0 หรือมากกว่า — ถ้าต้องการล้างค่าให้กดปุ่ม ✕ รีเซ็ตรีเช็ค','warn');}
     renderScanList(); // คืนตัวเลขเดิมในช่อง
     return;
   }
+  // เทียบกับ prev ตรงๆ ห้ามใช้ `Number(prev)||0` — ไม่งั้นพิมพ์ 0 ตอนที่ยังไม่เคยรีเช็ค (prev undefined)
+  // จะถูกมองว่า "ค่าเท่าเดิม" แล้ว return เงียบ ทั้งที่ผู้ใช้ตั้งใจบันทึกว่าไม่มีของ
+  if(prev!=null&&Number(prev)===q)return; // blur โดยไม่เปลี่ยนค่า — ไม่ต้องทำอะไร
   sd.recheckQty=q;sd.recheckBy=currentUser||'';sd.recheckAt=new Date().toISOString();sd.manualEditAt=Date.now();
   _freezeRecheckBaseline(sku,sd);
   if(scanListMap.has(sku)){const e=scanListMap.get(sku);e.totalQty=q;e.status='audit';}
@@ -5559,32 +5604,10 @@ function getScanRowStyle(s){
 function getPillClass(s){const m={scanning:'pill-pending',pass:'pill-pass',audit:'pill-audit',audit_check:'pill-pass',stock_adjustment:'pill-audit',unknown:'pill-unknown'};return m[s]||'pill-pending';}
 
 
-function toggleProgressMode(){
-  if(currentBranch==='WH')return; // สาขาเท่านั้น
-  _progressMode=_progressMode==='catA'?'all':'catA';
-  try{localStorage.setItem('progressMode_'+currentBranch,_progressMode);}catch(e){}
-  updateStats();
-}
 function updateStats(){
   const active=_cachedActiveSkus.length?_cachedActiveSkus:getActiveSkus();
   const statsSource=active.length?active:[...state.scanData.keys()];
-  if(_cachedBranchSku===null){
-    if(state.productMasterData.length&&state.r01Data.length){
-      const pmSkuSet=new Set(state.productMasterData.map(r=>r.sku));
-      let n=0;for(const r of state.r01Data){if(pmSkuSet.has(r.colE))n++;}
-      _cachedBranchSku=n;
-    }else _cachedBranchSku=0;
-    // catA cache (สาขาเท่านั้น): set ของ Col D='A' + ตัวหาร (∩ R01 ถ้ามี R01)
-    if(currentBranch!=='WH'&&state.productMasterData.length){
-      const aSet=new Set();for(const r of state.productMasterData){if(r.cat==='A')aSet.add(r.sku);}
-      let aDenom=aSet.size;
-      if(state.r01Data.length){const r01s=new Set(state.r01Data.map(r=>r.colE));aDenom=0;for(const s of aSet){if(r01s.has(s))aDenom++;}}
-      _cachedCatA={set:aSet,denom:aDenom};
-    }else _cachedCatA=null;
-  }
-  const branchSku=_cachedBranchSku;
-  const r01Set=branchSku>0?new Set(state.r01Data.map(r=>r.colE)):null;
-  let c=0,p=0,f=0,cBranch=0,cCatA=0,auditGot=0,auditTotal=0;
+  let c=0,p=0,f=0,cCountable=0,auditGot=0,auditTotal=0;
   for(const sku of statsSource){
     const sd=state.scanData.get(sku);
     if(!sd||sd.status==='pending'||sd.status==='scanning')continue;
@@ -5593,16 +5616,15 @@ function updateStats(){
     else if(sd.status==='audit')f++;
     if(sd.status==='audit'||sd.status==='audit_check'||sd.status==='stock_adjustment'||(sd.auditor&&sd.status==='pass')){auditTotal++;}
     if(sd.status==='audit_check'||sd.status==='stock_adjustment'||(sd.auditor&&sd.status==='pass')){auditGot++;}
-    if(r01Set&&r01Set.has(sku))cBranch++;
-    if(_cachedCatA&&_cachedCatA.set.has(sku)&&(!r01Set||r01Set.has(sku)))cCatA++;
+    if(_countableSkus.has(sku))cCountable++;
   }
-  const total=_cachedTotalSku||state.productMasterData.length||active.length||state.scanData.size;
+  // Total SKU = ตัวหาร Progress ตัวเดียวกัน (SKU ใน R01 ที่ systemQty ≠ 0) — ไม่มี fallback ไปขนาด catalog
+  // ยังไม่ได้อัป R01 ต้องได้ 0 จริงๆ ไม่ใช่เลขหลอกจาก Product Master
+  const total=_cachedTotalSku;
   const u=state.unknownScans.length;
-  const _catAMode=(_progressMode==='catA'&&_cachedCatA&&currentBranch!=='WH');
-  const progNum=_catAMode?cCatA:(branchSku?cBranch:c);
-  const progDenom=_catAMode?_cachedCatA.denom:(branchSku||total);
+  const progNum=cCountable,progDenom=_cachedTotalSku;
   const pct=progDenom?Math.round(progNum/progDenom*100):0;
-  document.getElementById('statTotal').textContent=total;document.getElementById('statBranchSku').textContent=branchSku||'—';document.getElementById('statCounted').textContent=c;document.getElementById('statPass').textContent=p;document.getElementById('statFail').textContent=f;document.getElementById('statUnknown').textContent=u;document.getElementById('statPct').textContent=pct+'%';document.getElementById('progressFill').style.width=pct+'%';document.getElementById('progressCount').textContent=(currentBranch!=='WH'?(_catAMode?'CatA · ':'Stock100 · '):'')+progNum+' / '+progDenom;{const _pmL=document.getElementById('progressModeLabel'),_pC=document.getElementById('progressCard');if(currentBranch!=='WH'){if(_pmL)_pmL.textContent='Progress ⇄';if(_pC)_pC.style.cursor='pointer';}else{if(_pmL)_pmL.textContent='Progress';if(_pC)_pC.style.cursor='default';}}const scEl=document.getElementById('stockCount');if(scEl)scEl.textContent=active.length;const auditSub=document.getElementById('statAuditSub');if(auditSub){if(auditTotal>0){auditSub.style.display='block';auditSub.textContent=auditGot+' / '+auditTotal;}else{auditSub.style.display='none';}}
+  document.getElementById('statTotal').textContent=total;document.getElementById('statCounted').textContent=c;document.getElementById('statPass').textContent=p;document.getElementById('statFail').textContent=f;document.getElementById('statUnknown').textContent=u;document.getElementById('statPct').textContent=pct+'%';document.getElementById('progressFill').style.width=pct+'%';document.getElementById('progressCount').textContent=progNum+' / '+progDenom;const scEl=document.getElementById('stockCount');if(scEl)scEl.textContent=active.length;const auditSub=document.getElementById('statAuditSub');if(auditSub){if(auditTotal>0){auditSub.style.display='block';auditSub.textContent=auditGot+' / '+auditTotal;}else{auditSub.style.display='none';}}
   const _apct=auditTotal?Math.round(auditGot/auditTotal*100):0;
   const _apWrap=document.getElementById('auditProgressWrap');
   const _apFill=document.getElementById('auditProgressFill');
@@ -5615,23 +5637,20 @@ function updateStats(){
   updateAdjustDocCount();
   updateWhResultTabs();
   updatePharmacistAuditConfirmBtn();
-  // WH: ซ่อน Total SKU + SKU BRANCH, เปลี่ยน Counted → Audit ทั้งหมด (auditTotal)
+  // WH: เปลี่ยน Counted → "Recheck ทั้งหมด" (auditTotal) · Total SKU แสดงบน Desktop แต่ซ่อนบน WH PDA
+  // (WH PDA จอเล็กเรียง 2 คอลัมน์ — เพิ่ม Total เข้าไปจะเหลือการ์ดโดดแถวล่าง)
   const _c1=document.getElementById('statCardTotal');
-  const _c2=document.getElementById('statCardBranch');
   const _cl=document.getElementById('statCountedLabel');
+  const _c3=document.getElementById('statCounted').closest('.stat-card');
   if(currentBranch==='WH'){
-    if(_c1)_c1.style.display='none';
-    if(_c2)_c2.style.display='none';
+    if(_c1)_c1.style.display=window.innerWidth<=600?'none':'';
     if(_cl)_cl.textContent='Recheck ทั้งหมด';
     document.getElementById('statCounted').textContent=auditTotal;
-    // PDA WH: ซ่อน card "Audit ทั้งหมด" (card 3) — แสดงเฉพาะ PASS + AUDIT
-    const _c3=document.getElementById('statCounted').closest('.stat-card');
+    // PDA WH: ซ่อน card "Recheck ทั้งหมด" — แสดงเฉพาะ PASS + AUDIT
     if(_c3)_c3.style.display=window.innerWidth<=600?'none':'';
   }else{
     if(_c1)_c1.style.display='';
-    if(_c2)_c2.style.display='';
     if(_cl)_cl.textContent='Counted';
-    const _c3=document.getElementById('statCounted').closest('.stat-card');
     if(_c3)_c3.style.display='';
   }
 }
@@ -5644,7 +5663,7 @@ function schedulePopupRender(){clearTimeout(popupRenderTimer);popupRenderTimer=s
 
 function buildPopupBaseRows(){
   const base=[];
-  getActiveSkus().forEach(sku=>{const info=state.skuMap.get(sku);if(!info)return;const sd=state.scanData.get(sku)||{countedQty:0,status:'pending',retries:0,timestamp:'',scannedBy:'',auditor:'',auditStatus:'pending',barcode:'',location:''};base.push({sku,info,sd,barcodes:info.barcodes.map(b=>b.barcode).join(', '),isUnknown:false,isDel:!!info.isDel,isP:!!info.isP,cat:(info.cat||'').toUpperCase()});});
+  getActiveSkus().forEach(sku=>{const info=state.skuMap.get(sku);if(!info)return;const sd=state.scanData.get(sku)||{countedQty:0,status:'pending',retries:0,timestamp:'',scannedBy:'',auditor:'',auditStatus:'pending',barcode:'',location:''};base.push({sku,info,sd,barcodes:info.barcodes.map(b=>b.barcode).join(', '),isUnknown:false,isDel:!!info.isDel});});
   state.unknownScans.forEach(u=>base.push({sku:'—',info:{sku:'—',productName:'ไม่มีในระบบ',systemQty:0,barcodes:[]},sd:{countedQty:u.count,status:'unknown',retries:0,timestamp:u.timestamp,scannedBy:u.scannedBy,auditor:'',auditStatus:'—',barcode:u.barcode,location:u.location||''},barcodes:u.barcode,isUnknown:true}));
   return base;
 }
@@ -5682,7 +5701,7 @@ function getFilteredPopupRows(){
   const search=(document.getElementById('popupSearch').value||'').toLowerCase();
   if(!popupBaseRowsCache)popupBaseRowsCache=buildPopupBaseRows();
   let rows=popupBaseRowsCache;
-  if(popupFilterState!=='all')rows=rows.filter(r=>{if(popupFilterState==='unknown')return r.isUnknown;if(popupFilterState==='del')return r.isDel;if(popupFilterState==='p')return r.isP;if(popupFilterState==='cata')return r.cat==='A';if(popupFilterState==='pending')return r.sd.status==='pending';if(popupFilterState==='audit')return r.sd.status==='audit'||r.sd.status==='stock_adjustment';return r.sd.status===popupFilterState;});
+  if(popupFilterState!=='all')rows=rows.filter(r=>{if(popupFilterState==='unknown')return r.isUnknown;if(popupFilterState==='del')return r.isDel;if(popupFilterState==='pending')return r.sd.status==='pending';if(popupFilterState==='audit')return r.sd.status==='audit'||r.sd.status==='stock_adjustment';return r.sd.status===popupFilterState;});
   if(popupStaffFilter!=='all')rows=rows.filter(r=>(r.sd.scannedBy||'')===popupStaffFilter);
   if(search){const s=search.trim(),isNum=/^[0-9]+$/.test(s);if(isNum){const getBc=(csv,q)=>csv.split(',').map(x=>x.trim()).some(b=>b.startsWith(q));const tf=q=>rows.filter(r=>r.sku.toLowerCase().startsWith(q)||getBc(r.barcodes.toLowerCase(),q));let q=s,fl=tf(q);while(!fl.length&&q.length>3){q=q.slice(0,-1);fl=tf(q);}rows=fl;}else rows=rows.filter(r=>r.info.productName.toLowerCase().includes(s)||r.sku.toLowerCase().includes(s)||r.barcodes.toLowerCase().includes(s)||(r.sd.location||'').toLowerCase().includes(s));}
   return rows;
@@ -5710,7 +5729,7 @@ function renderPopupTable(){
     else if(sd.auditStatus==='pending'&&sd.status!=='pending'){ap='<span class="pill pill-audit">⏳</span>';}
     else{ap='—';}
     const ut=r.isUnknown?'<span class="tag-unknown">ไม่มีในระบบ</span>':'';
-    const dt=r.isDel?'<span class="tag-del">DEL</span>':'';const pt=r.isP?'<span class="tag-p">P</span>':'';
+    const dt=r.isDel?'<span class="tag-del">DEL</span>':'';
     const qc=sd.status==='pass'||sd.status==='audit_check'?'var(--green)':'var(--text)';
     const bcs=barcodes.length>22?barcodes.slice(0,22)+'…':barcodes;
     const canEdit=(sd.status==='pending'||sd.status==='scanning')&&_canEnterCountQty(info);
@@ -5721,7 +5740,7 @@ function renderPopupTable(){
     const actionCell=canNoStock&&!r.isUnknown&&sd.status==='pending'&&(info.systemQty||0)>0
       ?`<td style="text-align:center;"><button onclick="showNoStockModal('${sku}')" title="ไม่มีของจริง — บันทึกนับ 0" style="border:1px solid rgba(230,70,70,0.4);background:rgba(230,70,70,0.08);color:var(--red);padding:4px 10px;border-radius:8px;font-size:0.72rem;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;">🚫 นับ 0</button></td>`
       :'<td style="text-align:center;color:var(--text3);">—</td>';
-    return`<tr><td style="color:var(--text3);font-size:0.75rem">${i+1}</td><td class="ptd-sku">${sku}${ut}${dt}${pt}</td><td class="ptd-bc" title="${barcodes}">${bcs}</td><td class="ptd-name">${info.productName}</td>${sysQtyCell}<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center">${qtyCell}</td><td style="text-align:center;">${scannedByCell}</td><td>${sp}</td><td>${ap}</td><td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3)">${sd.firstScanAt||sd.timestamp||'—'}</td>${locCell}${actionCell}</tr>`;
+    return`<tr><td style="color:var(--text3);font-size:0.75rem">${i+1}</td><td class="ptd-sku">${sku}${ut}${dt}</td><td class="ptd-bc" title="${barcodes}">${bcs}</td><td class="ptd-name">${info.productName}</td>${sysQtyCell}<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center">${qtyCell}</td><td style="text-align:center;">${scannedByCell}</td><td>${sp}</td><td>${ap}</td><td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3)">${sd.firstScanAt||sd.timestamp||'—'}</td>${locCell}${actionCell}</tr>`;
   }).join('');
 }
 
@@ -5730,7 +5749,7 @@ function updateStockCount(){const el=document.getElementById('stockCount');if(el
 function getStatusPill(s){const m={pass:'<span class="pill pill-pass">✅ Pass</span>',audit:`<span class="pill pill-audit">⚠️ ${_auditTerm()}</span>`,audit_check:'<span class="pill pill-pass">✅ Audit Check</span>',stock_adjustment:'<span class="pill pill-audit">⚠️ Stock Adjustment</span>',pending:'<span class="pill pill-pending">⏳ รอนับ</span>',unknown:'<span class="pill pill-unknown">❓Unknown</span>'};return m[s]||`<span class="pill pill-pending">${s}</span>`;}
 
 // label/ชื่อไฟล์ตามปุ่ม filter ที่เลือกอยู่ในป็อปอัพตอนกด Export — ให้ตรงกับที่ตารางแสดงผลเป๊ะ
-const POPUP_FILTER_LABELS={all:'ทั้งหมด',unknown:'ไม่พบในระบบ',del:'DEL',p:'P',cata:'หมวด A',pending:'รอนับ',pass:'Pass'};
+const POPUP_FILTER_LABELS={all:'ทั้งหมด',unknown:'ไม่พบในระบบ',del:'DEL',pending:'รอนับ',pass:'Pass'};
 function exportExcel(){
   const header=['SKU','Barcode','ProductName','SystemQty','CountedQty','Status','Timestamp',_auditTerm()+' Status'],rows=[header];
   getFilteredPopupRows().forEach(r=>{rows.push([r.sku,r.barcodes,r.info.productName,r.info.systemQty,r.sd.countedQty,r.sd.status,_fmtDateDMY(r.sd.timestamp),r.sd.auditStatus||'pending']);});
@@ -5793,7 +5812,7 @@ function guideHtml(isWh){
     +'<strong style="color:var(--purple);display:block;margin-bottom:5px;">🔒 Admin เท่านั้น</strong>'
     +'<ul style="padding-left:16px;margin:0;">'
       +'<li><strong>R05.106</strong> — Barcode สินค้า (ใช้ร่วมทุกสาขา)</li>'
-      +'<li style="margin-top:3px;"><strong>Product Master</strong> — ชื่อสินค้า (ใช้ร่วมทุกสาขา)</li>'
+      +'<li style="margin-top:3px;"><strong>Product Master</strong> — ชื่อสินค้าของสาขานี้ (แยกไฟล์ต่อสาขา รวม WH · อัปทีละสาขา)</li>'
       +'<li style="margin-top:3px;">Admin mode ปิดการ sync Firestore (local เท่านั้น)</li>'
     +'</ul>'
   +'</div>'
@@ -5856,8 +5875,8 @@ function _toastMessageForDevice(msg){
   const exact=_PDA_TOAST_SHORT.get(text);if(exact)return exact;
   return text
     .replace(/^♻️ รีเซ็ตของค้างข้ามวัน (\d+) รายการ — กรุณานับใหม่$/,'♻️ รีเซ็ต $1 รายการ — นับใหม่')
-    .replace(/^Product Master อัปเดตล่าสุด (.+)$/,'PM อัปเดต $1')
-    .replace(/^Product Master: (\d+) รายการ(.*)$/,'PM: $1 รายการ$2')
+    .replace(/^Product Master \((\w+)\) อัปเดตล่าสุด (.+)$/,'PM $1 อัปเดต $2')
+    .replace(/^Product Master \((\w+)\): (\d+) รายการ(.*)$/,'PM $1: $2 รายการ$3')
     .replace(/^R01\.102: /,'R01: ')
     .replace(/^R05\.106: /,'R05: ')
     .replace(/ · ล้าง R16 เดิมแล้ว — อัพ R16 วันนี้ก่อน Confirm \(Audit เดิมรอเภสัชตรวจ\)$/,' — อัป R16 ก่อน Confirm')
@@ -5872,7 +5891,7 @@ function _toastMessageForDevice(msg){
     .replace(/^โหลด LOT\/EXP สำเร็จ · จับคู่ได้ (.+)$/,'LOT/EXP: $1')
     .replace(/^โหลดราคา R05\.105 สำเร็จ · (.+)$/,'ราคา: $1')
     .replace(/^บันทึก LOT\/ราคาขึ้น Cloud สำเร็จ \((\d+) SKU\) — เครื่องอื่นเปิดจะเห็นข้อมูลนี้$/,'บันทึก LOT/ราคาแล้ว ($1 SKU)')
-    .replace(/^(.+): ระบบ = 0 → บันทึกนับ 0 \(มีของจริงให้สแกนซ้ำ\)$/,'$1: นับ 0 · มีของ = สแกนซ้ำ')
+    .replace(/^(.+): ระบบติดลบ → บันทึกนับ 0 \(มีของจริงให้สแกนซ้ำ\)$/,'$1: นับ 0 · มีของ = สแกนซ้ำ')
     .replace(/^Export รายงานผลลัพธ์การนับ \(.+\) (\d+) รายการ สำเร็จ$/,'Export รายงาน $1 รายการแล้ว');
 }
 function toast(msg,type='info',ms=2500){const c=document.getElementById('toastContainer'),t=document.createElement('div'),s=document.createElement('span');t.className=`toast toast-${type}`;s.textContent=_toastMessageForDevice(msg);t.appendChild(s);c.appendChild(t);setTimeout(()=>{t.style.transition='opacity 0.35s,transform 0.35s';t.style.opacity='0';t.style.transform='scale(0.8)';setTimeout(()=>t.remove(),350);},ms);}
@@ -5964,9 +5983,12 @@ async function syncR16MetaToFirestore(){
 
 async function syncProductMasterToFirestore(){
   if(!_db||!currentBranch||!state.productMasterData.length)return;
+  const ref=getProductMasterMetaRef();
+  if(!ref)return;
   try{
-    await getProductMasterMetaRef().set({data_json:JSON.stringify(state.productMasterData),row_count:state.productMasterData.length,updated_at:firebase.firestore.FieldValue.serverTimestamp(),updated_at_text:state.productMasterUploadedAt||formatThaiDateTime(new Date())});
-  }catch(e){console.warn('Firestore product master sync:',e.message);}
+    // เขียนลง {branch}_pm ของ "สาขาที่เลือกอยู่ตอนนี้" เท่านั้น — อัปผิดสาขา = catalog สาขานั้นผิดทันทีผ่าน listener
+    await ref.set({branch:currentBranch,data_json:JSON.stringify(state.productMasterData),row_count:state.productMasterData.length,updated_at:firebase.firestore.FieldValue.serverTimestamp(),updated_at_text:state.productMasterUploadedAt||formatThaiDateTime(new Date())});
+  }catch(e){console.warn('Firestore product branch master sync:',e.message);}
 }
 
 // badge/วันที่ R16 อ่านจาก _r01 master doc เสมอ (เหมือน R01) — ไม่พึ่ง session doc ที่โดน syncToFirestore ทับด้วยค่าเครื่องอื่นได้
@@ -6021,11 +6043,20 @@ async function restoreMasterFromFirestore(force=false){
       if(r01Doc.exists){state.r01Version=r01Doc.data().r01Version||state.r01Version||'';const uploadedAt=_r01UploadedAtFromDocData(r01Doc.data());if(uploadedAt)_setR01Ts(uploadedAt);_applyR16MetaFromDoc(r01Doc.data());}
     }
   }catch(e){console.warn('Firestore master restore:',e.message);}
-  // PM badge/meta: ดึงจาก stock_sessions ที่ rules อนุญาต
+  // Product Branch Master badge/meta: ดึงจาก {branch}_pm ของสาขานี้
+  // doc ไม่มี = สาขานี้ยังไม่อัป PBM → ต้องล้างของเดิมทิ้งให้เห็นชัด ห้ามค้าง catalog ของสาขาก่อนหน้า
+  // (เดิม doc.exists===false เป็น no-op เงียบ ซึ่งไม่มีปัญหาตอน global_pm แต่ตอนนี้ PM ผูกสาขาแล้ว)
   try{
-    const pmMetaDoc=await getProductMasterMetaRef().get();
-    if(pmMetaDoc.exists)applyProductMasterMeta(pmMetaDoc.data());
-  }catch(e){console.warn('Firestore product master restore:',e.message);}
+    const pmRef=getProductMasterMetaRef();
+    const pmMetaDoc=pmRef?await pmRef.get():null;
+    if(pmMetaDoc&&pmMetaDoc.exists)applyProductMasterMeta(pmMetaDoc.data());
+    else{
+      state.productMasterData=[];state.productMasterMap.clear();
+      document.getElementById('badgeProductMaster').textContent='ยังไม่โหลด';
+      _setPmTs('');
+      if(state.r05Data.length)rebuildMaps();
+    }
+  }catch(e){console.warn('Firestore product branch master restore:',e.message);}
 }
 
 function saveAuditLogToFirestore(){
@@ -6784,7 +6815,9 @@ function getPharmacistAuditPendingMap(){
   for(const[sku,sd] of state.scanData.entries()){
     if(!sd||sd.status!=='audit'||sd.auditor||sd.recheckQty==null)continue;
     const qty=Number(sd.recheckQty);
-    if(Number.isFinite(qty)&&qty>0)pending.set(sku,qty);
+    // รับ 0 ด้วย (ส.ค. 2026) = "รีเช็คแล้วไม่มีของ" — guard `recheckQty==null` ด้านบนกัน "ยังไม่รีเช็ค" ไว้แล้ว
+    // เดิมกรอง >0 ทำให้ audit ที่นับได้ 0 ยืนยันไม่ได้เลย (ค้างถาวร) ซึ่งเป็นเคสปกติของ negSys
+    if(Number.isFinite(qty)&&qty>=0)pending.set(sku,qty);
   }
   return pending;
 }
@@ -8540,7 +8573,7 @@ function importLocationCSV(event){
       const c0l=col0.toLowerCase();
       if(c0l==='sku'||c0l==='barcode'||c0l==='รหัสสินค้า'||c0l==='location')continue;
       if(!loc){skipped++;continue;}
-      // lookup SKU จาก Product Master (โหลดจาก Firestore global_pm) เป็นหลัก
+      // lookup SKU จาก Product Branch Master (โหลดจาก Firestore {branch}_pm — WH ใช้ WH_pm) เป็นหลัก
       let sku=null;
       if(state.productMasterMap.has(col0))sku=col0;
       else if(state.barcodeMap.has(col0))sku=state.barcodeMap.get(col0);

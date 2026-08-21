@@ -97,7 +97,7 @@ api/ip.js           ← Vercel function สำหรับ login log IP
 
 ```js
 state = {
-  productMasterData, productMasterMap,   // Product catalog
+  productMasterData, productMasterMap,   // Product Branch Master — catalog ของ "สาขานี้" ({branch}_pm)
   r01Data, r01Version,                   // Inventory qty + cloud master version (R01.102)
   r05Data,                               // Barcode mapping (R05.106)
   r16Data, r16SalesMap, r16RawMap,       // Sales during count (R16.104)
@@ -106,7 +106,7 @@ state = {
   r16DateMismatch,                       // true = R16 TRANDATE ไม่ overlap scan dates
   r16_103Map, r16_103RawMap,             // WH only: รับเข้ายังไม่ขึ้นชั้น (R16.103)
   r16_103DetailVersion,                  // active R16.103 generation/version
-  skuMap,       // SKU → { productName, unitPrice, systemQty, barcodes[], isDel, isP }
+  skuMap,       // SKU → { productName, unitPrice, systemQty, negSys, barcodes[], isDel }
   barcodeMap,   // barcode → SKU
   skuDirectMap, // SKU → { barcode, unitName }
   scanData,     // Map<SKU, { countedQty, status, timestamp, scannedBy, auditor,
@@ -117,6 +117,27 @@ state = {
   zoneStaffMap  // WH only: Map<zone, staff> e.g. "A" → "มุก"
 }
 ```
+
+### Product Branch Master + Total SKU / Progress (ส.ค. 2026)
+
+**Product Master แยกไฟล์ต่อสาขาแล้ว** — Firestore `stock_sessions/{branch}_pm` (`SRC_pm`/`KKL_pm`/`SSS_pm`/`WH_pm`) ไม่ใช่ `global_pm` ตัวเดียว
+- `getProductMasterMetaRef(branch=currentBranch)` เป็นจุดเดียวที่ผูก doc id · **ไม่มี fallback ไป `global_pm`** โดยเจตนา — สาขาที่ยังไม่อัป PBM ต้องเห็น badge "ยังไม่โหลด" ไม่ใช่หยิบ catalog สาขาอื่นมาใช้เงียบๆ
+- `restoreMasterFromFirestore()` ต้องล้าง `productMasterData`/`productMasterMap` เมื่อ `doc.exists===false` (เดิมเป็น no-op เงียบ ซึ่งไม่มีปัญหาตอน PM เป็น global แต่ตอนนี้ค้าง catalog ของสาขาก่อนหน้าได้)
+- **Col D filter:** ข้ามแถวที่ `D` / `P` / `REVIEW` · ไม่มี field `cat` และ `isP` แล้ว (โหมด Progress CatA + ปุ่มกรอง `CAT[A]`/`P` ถูกถอดออกทั้งหมด)
+- SKU ที่ถูกกรองออกแต่ยังมีสต็อกใน R01 → จัดเป็น **DEL** ตามกลไกเดิม · ยังสแกน/Confirm/เข้าใบปรับสต็อก และ **ยังนับใน Progress ตามปกติ**
+- อัป PBM ลง **สาขาที่เลือกอยู่ตอนนั้น** เท่านั้น — อัปผิดสาขา = catalog สาขานั้นผิดทันทีผ่าน listener · toast แสดงชื่อสาขาไว้กัน (แก้ข้อความต้องแก้ regex ใน `_toastMessageForDevice` คู่กัน)
+
+**`_countableSkus` = "SKU ที่ต้องนับ" = SKU ใน R01.102 ที่ `systemQty !== 0` และหมวด (คอลัมน์ P) ไม่ใช่ประเภทที่ไม่ต้องนับ** — สร้างใน `rebuildMaps()` ก่อน early-return ของ R05
+- หมวดที่ไม่นับ: คอลัมน์ P ขึ้นต้น `11.` หรือมีคำว่า `DELETE` — `_isNonCountR01Category()` ติดธง `nc:1` ตอน `loadR01` (เพิ่มหมวดใหม่แก้ที่ `R01_NON_COUNT_PREFIXES`/`R01_NON_COUNT_KEYWORDS`)
+- ⚠️ **เก็บแค่ธง `nc` ห้ามเก็บข้อความหมวดลง `r01Data`** — `{branch}_r01` มีเพดาน 1 MiB · ข้อความไทย ~45 ตัวอักษร × 5,400 แถว ≈ 750 KB ชนเพดานทันที
+- SKU หมวดนี้ยังอยู่ครบ: สแกนได้ · Confirm ได้ผลถูกต้อง · เห็นในรายการสินค้า — ตัดออกเฉพาะจาก Total SKU/Progress
+- `_cachedTotalSku = _countableSkus.size` เป็นทั้ง **การ์ด Total SKU และตัวหาร Progress** · ตัวเศษคือ SKU ในชุดเดียวกันที่ Confirm แล้ว
+- **invariant: ตัวเศษกับตัวหารต้องมาจากชุดเดียวกันเสมอ** — เดิมตัวเศษวนจาก `scanData` แต่ตัวหารนับจาก `r01Data` คนละแหล่ง ทำให้ % ทะลุ 100 ได้เมื่อกรองข้างเดียว
+- ⚠️ **ห้ามใช้ `skuMap.systemQty` ตัดสินว่า "ต้องนับไหม"** — สาขายา clamp `negSys` เป็น 0 ไปแล้ว จึงแยก "G=0 จริง (ไม่ต้องนับ)" กับ "G ติดลบ (ต้องนับ = ขายของขาด)" ไม่ออก ต้องอ่านจาก `state.r01Data` ค่าดิบเท่านั้น
+- PBM **ไม่มีผล** กับชุดนี้ — ตัวหารดู R01 อย่างเดียว
+- ไม่มี R01 → Total SKU = 0 จริงๆ (ตัด fallback chain เดิมที่ตกไปใช้ขนาด catalog ทิ้งแล้ว)
+- การ์ด `SKU BRANCH` ถูกลบ · WH เห็น Total SKU บน Desktop แต่ซ่อนบน PDA · ป้าย `Stock100 · `/`CatA · ` ใต้ Progress ถูกตัดออก
+- ⚠️ ลบ/เพิ่มการ์ดใน `.stats-bar` ต้องไล่เลข `nth-child` ใน `@media(max-width:600px)` และจำนวนคอลัมน์ใน `@media(max-width:820px)` ใหม่ทุกครั้ง
 
 ### กฎราคาและสิทธิ์กรอกจำนวน (ย้ายมาที่ R05.106 Col B — ก.ค. 2026)
 
@@ -147,14 +168,23 @@ WH R16 raw timeline เก็บ cache ใน IndexedDB (`stock-count-cache` / `
 pending → scanning → pass
                    → audit → (verify pass)  → pass
                            → (verify fail)  → stock_adjustment
-                   → stock_adjustment  (สาขายา: negSys — ระบบติดลบ clamp เป็น 0, ข้ามเภสัช verify)
+                   → stock_adjustment  (สาขายา: noStock — ผู้ช่วยยืนยันชั้นว่างทั้งที่ระบบมีของ, ข้ามเภสัช verify)
 ```
+`negSys` (ระบบติดลบ) **ไม่ลัดไป stock_adjustment แล้ว (ส.ค. 2026)** — บังคับผ่าน `audit` ให้เภสัชตรวจก่อนเสมอ
 
 `unknown` = barcode ไม่พบในระบบ (parallel track)
 `audit_check` = legacy, ยังอยู่ใน codebase แต่ไม่ถูกผลิตใหม่แล้ว
 `negSys` = สาขายาเท่านั้น: systemQty < 0 ใน R01 → skuMap เก็บ 0 + flag (ดู SKILL-scan-engine)
-สาขายา สแกนสินค้า `negSys || systemQty===0` **ครั้งแรก** = บันทึกนับ 0 (สแกนป้ายชั้น = เช็คแล้วไม่มีของ) ครั้งที่ 2+ บวกปกติ —
-`zeroSysModal` ถูกถอด (ก.ค. 2026) เหลือเป็น dead code แต่ `_zeroSysHold` ยังเป็น hold-guard ทุกจุด ห้ามลบ · systemQty=0 ที่นับเจอของยังไป `audit` ให้เภสัชรีเช็คเสมอ
+
+**กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกหมดแล้ว (ส.ค. 2026) — ห้ามนำกลับมา**
+ทั้ง G=0 และ G ติดลบ สแกนแล้ว **บวกตามปกติ** เหมือน SKU อื่น
+- **G = 0** → ตัดออกจาก Progress ทั้งตัวเศษและตัวหาร (ดู §Total SKU / Progress) ไม่ต้องเดินไปสแกนปิดยอด · ยิงมาจริง → `audit`
+- **G ติดลบ (`negSys`)** → **บังคับเป็น `audit` เสมอไม่ว่านับได้เท่าไร** (เช็คก่อนสูตร pass ใน `_buildPendingScanEvaluation` และตรงกับ `reEvaluateAuditItems`)
+  เหตุผล: ยอดระบบติดลบ = ข้อมูลสต็อกผิดแน่นอน ต้องให้เภสัชไปดูของบนชั้นจริงทุกตัว ห้ามลัดไป `stock_adjustment` เอง และห้ามเป็น `pass`
+  ⚠️ ต้องเช็ค `negSys` **ก่อน** `effectiveCnt===sys` เพราะ systemQty ถูก clamp เป็น 0 แล้ว → นับ 0 จะกลายเป็น pass เงียบๆ
+- `zeroSysModal`/`showZeroSysModal`/`confirmZeroSys` ยังเป็น dead code ที่ต้องเก็บไว้ และ `_zeroSysHold` ยังเป็น hold-guard ทุกจุด **ห้ามลบ**
+- **ยอดรีเช็ค 0 รองรับแล้ว** (`updatePharmacyRecheckQty` + `getPharmacistAuditPendingMap`) = "เภสัชดูแล้วไม่มีของ" ต่างจาก "ยังไม่รีเช็ค" (`recheckQty == null`)
+  จำเป็นเพราะ negSys ส่วนใหญ่ไม่มีของจริง ถ้ากรอก 0 ไม่ได้จะค้าง audit ถาวร · ผลตัดสินใช้สูตรเดิม (เทียบกับ `recheckSystemQty` ที่ freeze ไว้)
 `noStock` = สาขายาเท่านั้น: ระบบมี stock แต่ผู้ช่วยยืนยันว่าไม่มีของจริง → Confirm เป็น `stock_adjustment` ตามกติกาปัจจุบัน
 
 สูตร Confirm รอบแรกห้ามเปลี่ยนโดยพลการ:
@@ -184,7 +214,9 @@ Audit Verify ของเภสัชก็เช่นกัน — สแก�
 | `{branch}` | session หลัก — `schemaVersion:2` = metadata อย่างเดียว (ไม่มี `scanData`/`scanListMap`) |
 | `{branch}/items/{sku}` | **schema v2:** 1 document ต่อ SKU ต่อรอบนับ (subcollection) |
 | `{branch}_r01` | R01 master/version + R16 upload metadata |
-| `global_pm`, `global_r05` | shared Product/Barcode master |
+| `{branch}_pm` | **Product Branch Master** — catalog ชื่อสินค้าต่อสาขา (`SRC_pm`/`KKL_pm`/`SSS_pm`/`WH_pm`) · ส.ค. 2026 แทน `global_pm` |
+| `global_r05` | shared Barcode master (ยัง global — ใช้ร่วมทุกสาขา) |
+| `global_pm` | **legacy read-only** — ไม่มีโค้ดอ่าน/เขียนแล้ว เก็บไว้เพื่อ rollback **ห้ามลบ** |
 | `WH/confirm_ops/{opId}` | WH workflow v2 operation; publish ทั้งชุดด้วย `state:'committed'` |
 | `WH/confirm_ops/{opId}/results/{sku}` | ผล Count/Recheck ที่เตรียมไว้ต่อ SKU; reader ใช้เมื่อ parent op committed และ hash ครบเท่านั้น |
 | `WH_counts`, `WH_count_confirmations` | legacy Count inbox/marker — dual-read ระหว่าง compatibility เท่านั้น ห้ามใช้เขียน final ใหม่ |
@@ -280,7 +312,7 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 
 - เภสัชสแกนรีเช็คบน PDA ได้ แต่กด "✓ ยืนยัน Audit" ได้เฉพาะ Desktop — guard ด้วย `_isPdaApp()` (User-Agent) ไม่อิง viewport
 - ยอดที่สแกนเก็บใน `sd.recheckQty`/`recheckBy`/`recheckAt` (sync ผ่าน session doc) ห้ามกลับไปใช้ map ใน memory ที่ไม่ persist
-- เภสัชแก้จำนวนรีเช็คในแถว RESULT ได้ทั้ง PDA + Desktop ผ่าน `updatePharmacyRecheckQty()` (ก.ค. 2026) — เขียนทับแบบ SET + ตั้ง `manualEditAt` + `_markSkuDirty` เหมือนเส้นทางสแกน ห้ามเรียก inbox `WH_rechecks`; ขั้นต่ำ 1 — ยอด 0 ไม่รองรับตามกติกา pending>0 (ให้ใช้ ✕ รีเซ็ตรีเช็คแทน) และไม่ใช้กฎราคากับช่องนี้ (กฎราคาครอบเฉพาะ Count รอบแรก)
+- เภสัชแก้จำนวนรีเช็คในแถว RESULT ได้ทั้ง PDA + Desktop ผ่าน `updatePharmacyRecheckQty()` (ก.ค. 2026) — เขียนทับแบบ SET + ตั้ง `manualEditAt` + `_markSkuDirty` เหมือนเส้นทางสแกน ห้ามเรียก inbox `WH_rechecks`; **รับยอด 0 ได้ (ส.ค. 2026) = "ตรวจแล้วไม่มีของ"** ปฏิเสธเฉพาะค่าติดลบ · ล้างค่ากลับเป็น "ยังไม่รีเช็ค" ใช้ ✕ รีเซ็ตรีเช็ค · ไม่ใช้กฎราคากับช่องนี้ (กฎราคาครอบเฉพาะ Count รอบแรก)
 - `getPharmacistAuditPendingMap()` ต้องอ่านจาก `state.scanData` เท่านั้น — `scanListMap.totalQty` เป็น countedQty รอบแรกในสาขายา ใช้ตัดสินไม่ได้
 - `_confirmPharmacyAuditBatched()` ใช้ branch lock / แบตช์ 25 / ตรวจ R01+R16 version ชุดเดียวกับ Confirm รอบแรก และ abort ทั้งชุดถ้า `recheckQty`/`recheckBy`/`recheckAt` เปลี่ยนกลางงาน
 - ก่อน apply Verify ต้องเขียน final marker; ยืนยันทีละชุดจึงเปลี่ยนเฉพาะ SKU ที่มี `recheckQty` และ Audit ที่เหลือยังอยู่ใน marker
@@ -323,7 +355,7 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 - PDA ที่ออฟไลน์รับ branch lock ไม่ได้ทันที รายการใหม่จะ sync ภายหลังและรอ Confirm รอบถัดไป
 - Pharmacy Desktop ต้องออนไลน์ระหว่าง Confirm และระหว่างยืนยัน Audit Verify
 - เภสัชที่สแกนรีเช็คบน PDA ออฟไลน์ ยอดจะขึ้น Cloud ตอนกลับมาออนไลน์ Desktop จึงจะยืนยันได้
-- Audit Verify บางเส้นทางยังไม่รองรับ pending quantity 0 เพราะ pending map กรอง `> 0` ห้ามแก้โดยไม่มี business rule ที่อนุมัติ
+- Audit Verify รองรับ pending quantity 0 แล้ว (ส.ค. 2026) = "ตรวจแล้วไม่มีของ" — ห้ามกลับไปกรอง `> 0` ไม่งั้น negSys ค้าง audit ถาวร
 - Firestore rules ปัจจุบันเปิด read/write ให้ collections ที่แอปใช้ การ tighten rules เป็น security/migration แยกและต้องทดสอบทุก client
 - สาขายาที่รับ R16 ผ่าน legacy session sync อาจมีเฉพาะ aggregate maps ไม่มี raw TRANDATE timeline; ห้ามสมมติว่าป้ายวันที่ R16 ตรงกันแล้ว derived result ทุกเครื่องจะตรงโดยอัตโนมัติ
 - **Firestore quota (ก.ค. 2026):** Spark 50K reads/วันเคยเต็มช่วงรอบนับ (ประเมิน ~178K reads/วันนับทั้งระบบ) — ทางแก้หลักคืออยู่บนแผน Blaze (โควต้าฟรีรายวันยังได้เท่าเดิม + budget alert) จุดกิน read ใหญ่ที่ยังไม่แก้และเป็น backlog (ทุกข้อแตะ scan-related ต้องขอ approve กฎ 1 + field test): login สาขา v2 อ่าน items ซ้ำ 2 รอบ (`_loadScanItemsFromCloud` + listener initial ≈ 2×N/reload), ไม่ได้เปิด Firestore offline persistence, Pharmacy Confirm อ่าน server 3 รอบ (integrity check — ห้ามลดโดยพลการ), `WH_counts` เขียนทุกสแกนไม่ debounce (echo 1 read/สแกนไป Supervisor) · `startNewCount` สาขา v2 กิน ~N deletes + ~N reads ต่อครั้ง อย่ารันสองสาขาวันเดียวกันบน Spark

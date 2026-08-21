@@ -15,15 +15,15 @@ test.describe('pharmacy scan behaviors', () => {
   test.beforeEach(() => requireEmulator());
   test.setTimeout(60_000);
 
-  test('systemQty=0: first scan records 0 (เช็คแล้วไม่มีของ), further scans add normally', async ({ browser }) => {
+  // ส.ค. 2026: G=0 = "ไม่ต้องนับ" (หลุดจาก Progress ทั้งเศษและส่วน) จึงไม่มีกฎสแกนครั้งแรกนับ 0 อีก
+  // ยิงมาจริง = บวก 1 ตามปกติ → Confirm แล้วตกเป็น audit (ดู confirm-count.spec.js)
+  test('systemQty=0: every scan adds normally (no first-scan-zero rule anymore)', async ({ browser }) => {
     const a = await bootFreshCount(browser, { role: 'assistant', user: 'PDA-A', mode: 'pda' });
 
     await scanOnce(a.page, 'B-ZERO');
     await a.page.waitForFunction(() => state.scanData.get('S-ZERO')?.status === 'scanning', null, { polling: 100 });
-    expect(await sd(a.page, 'S-ZERO')).toEqual({ countedQty: 0, status: 'scanning', scans: 1 });
+    expect(await sd(a.page, 'S-ZERO')).toEqual({ countedQty: 1, status: 'scanning', scans: 1 });
 
-    await scanOnce(a.page, 'B-ZERO');
-    await a.page.waitForFunction(() => state.scanData.get('S-ZERO')?.countedQty === 1, null, { polling: 100 });
     await scanOnce(a.page, 'B-ZERO');
     await a.page.waitForFunction(() => state.scanData.get('S-ZERO')?.countedQty === 2, null, { polling: 100 });
 
@@ -32,18 +32,19 @@ test.describe('pharmacy scan behaviors', () => {
     await closeApp(a);
   });
 
-  test('negSys (systemQty<0): clamped to 0 in skuMap, first scan records 0', async ({ browser }) => {
+  // ส.ค. 2026: กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกทั้งหมด — negSys ก็บวกตามปกติเหมือน SKU อื่น
+  test('negSys (systemQty<0): clamped to 0 in skuMap, every scan adds normally', async ({ browser }) => {
     const a = await bootFreshCount(browser, { role: 'assistant', user: 'PDA-A', mode: 'pda' });
 
     const info = await a.page.evaluate(() => state.skuMap.get('S-NEG'));
-    expect(info.systemQty).toBe(0);
-    expect(info.negSys).toBeTruthy();
+    expect(info.systemQty).toBe(0);      // clamp ยังทำงาน
+    expect(info.negSys).toBeTruthy();    // flag ยังอยู่ — เป็นตัวบังคับ audit ตอน Confirm
 
     await scanOnce(a.page, 'B-NEG');
     await a.page.waitForFunction(() => state.scanData.get('S-NEG')?.status === 'scanning', null, { polling: 100 });
-    expect((await sd(a.page, 'S-NEG')).countedQty).toBe(0);
+    expect(await sd(a.page, 'S-NEG')).toEqual({ countedQty: 1, status: 'scanning', scans: 1 });
     await scanOnce(a.page, 'B-NEG');
-    await a.page.waitForFunction(() => state.scanData.get('S-NEG')?.countedQty === 1, null, { polling: 100 });
+    await a.page.waitForFunction(() => state.scanData.get('S-NEG')?.countedQty === 2, null, { polling: 100 });
     await closeApp(a);
   });
 

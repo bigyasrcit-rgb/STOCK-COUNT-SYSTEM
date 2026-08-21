@@ -1,22 +1,25 @@
 // Seed the emulator with the master-data doc set the app restores from.
 // Doc shapes mirror the app's own writers:
-//   global_pm  (syncProductMasterToFirestore index.html:5424): { data_json, row_count, updated_at_text }
-//   global_r05 (syncMasterToFirestore :5407):                  { data_json }
-//   {branch}_r01 (:5404 + syncR16MetaToFirestore :5417):       { data_json, r01UploadedAt, r01Version, r16* meta }
+//   {branch}_pm  (syncProductMasterToFirestore): { branch, data_json, row_count, updated_at_text }
+//                 ← Product Branch Master: 1 doc ต่อสาขา (ส.ค. 2026 แทน global_pm เดิม)
+//   global_r05   (syncMasterToFirestore):        { data_json }   ← ยัง global อยู่ (ใช้ร่วมทุกสาขา)
+//   {branch}_r01 (+ syncR16MetaToFirestore):     { data_json, r01UploadedAt, r01Version, r16* meta }
 const { adminDb } = require('./emulator');
 const F = require('./fixtures');
 
 async function seedMasters(projectId, { branch = 'SRC', r01Version = 'R01-TEST-1' } = {}) {
   const db = adminDb(projectId);
   await Promise.all([
-    db.doc('stock_sessions/global_pm').set({
+    db.doc(`stock_sessions/${branch}_pm`).set({
+      branch,
       data_json: JSON.stringify(F.pmRows),
       row_count: F.pmRows.length,
       updated_at_text: 'test-fixture',
     }),
     db.doc('stock_sessions/global_r05').set({ data_json: JSON.stringify(F.r05Rows) }),
     db.doc(`stock_sessions/${branch}_r01`).set({
-      data_json: JSON.stringify(F.r01Rows),
+      // r01CloudRows = shape loadR01 writes (col P already collapsed to `nc`) — not the raw CSV shape
+      data_json: JSON.stringify(F.r01CloudRows),
       r01UploadedAt: 'test-fixture',
       r01Version,
       r16UploadedAt: '',

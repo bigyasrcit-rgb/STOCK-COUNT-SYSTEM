@@ -80,14 +80,31 @@ location,SKU,qty
 `rebuildMaps`: สาขายา (`_isPharmacyBranch()`) systemQty < 0 → clamp เป็น `0` + flag `skuMap[sku].negSys=true`
 (ข้อมูลดิบใน `r01Data` เก็บค่าติดลบจริง — WH ไม่ clamp เห็นค่าจริง)
 
-**zeroSysModal — ถาม "มีของจริงไหม" (นับ 0 บน PDA):**
-สแกน**ครั้งแรก**ของสินค้า `negSys || systemQty===0` (plain scan, `qty===null`) → `handleBarcode` เซ็ต `_zeroSysHold` + `showZeroSysModal()` แล้ว return — ยังไม่บันทึกอะไร
-- "🚫 ไม่มีของ" → `confirmZeroSys(false)`: countedQty += 0, status `scanning` → Confirm แล้ว **pass** (0===0) เข้า progress
-- "✅ มีของ" → `confirmZeroSys(true)`: บวก addQty ตามสแกนปกติ — สแกนถัดไปของ SKU เดิมไม่ถามซ้ำ (`sd.scans.length>0`)
-- `_zeroSysHold` เป็น hold state คู่กับ `_scanGapHold` — **ทุก guard ต้องเช็คทั้งคู่**: `handleScanKey`, `handleScanInput`, `submitScanManual`, `processScan`, `drainQueue`, `resetScanRuntimeState`, `_loginModalOpen` (refocus list)
-- พิมพ์ `bc,qty` เอง (qty ไม่ null รวม `,0`) → ข้าม modal บันทึกตรง
+**⚠️ กฎ "สแกนครั้งแรกนับ 0" (`_zeroSysFirstScan`) ถูกถอดออกหมดแล้ว (ส.ค. 2026) — ห้ามนำกลับมา**
 
-- `evaluatePendingScans`: item `negSys` ที่ effectiveCnt ≠ 0 → **`stock_adjustment` ทันที** (`auditStatus='stock_adjustment'`) ข้ามคิวเภสัช verify; effectiveCnt = 0 → pass
+ไทม์ไลน์: `zeroSysModal` ถามมีของจริงไหม → (ก.ค. 2026) แทนด้วยกฎนับ 0 → (ส.ค. 2026) ถอดกฎนับ 0 ทิ้ง
+
+ตอนนี้ทั้ง **G = 0** และ **G ติดลบ** สแกนแล้ว **บวกตามปกติ** เหมือน SKU อื่นทุกประการ
+- **G = 0** ถูกตัดออกจาก `_countableSkus` → ไม่อยู่ในทั้งตัวเศษและตัวหารของ Progress
+  จึงไม่มีเหตุผลให้เดินไปสแกนป้ายชั้นเพื่อปิดยอดอีก (นั่นคือเจตนาเดียวของกฎนับ 0)
+- **G ติดลบ** ถอดออกเพราะยอดระบบติดลบ = ข้อมูลสต็อกผิดแน่นอน ต้องให้เภสัชไปดูของบนชั้นจริง**ทุกตัว**
+  ไม่ใช่ให้ผู้ช่วยปิดยอดเองด้วยการสแกนป้าย
+- ⚠️ `zeroSysModal`/`showZeroSysModal`/`confirmZeroSys` = **dead code** (จงใจทิ้งไว้ ไม่ลบ) และ `_zeroSysHold` ยังเป็น hold state คู่กับ `_scanGapHold`
+  — **ทุก guard ต้องเช็คทั้งคู่ ห้ามลบ**: `handleScanKey`, `handleScanInput`, `submitScanManual`, `processScan`, `drainQueue`, `resetScanRuntimeState`, `_loginModalOpen` (refocus list)
+
+**`negSys` → บังคับ `audit` เสมอ (ส.ค. 2026):**
+`_buildPendingScanEvaluation` เช็ค `si.negSys` **ก่อน** `effectiveCnt===sys`:
+```js
+if(si.negSys){/* คง audit */}
+else if(effectiveCnt===sys){status='pass';…}
+else if(sd.noStock&&effectiveCnt===0&&sys>0){status='stock_adjustment';…}
+```
+- ⚠️ **ลำดับสำคัญ** — `skuMap.systemQty` ของ negSys ถูก clamp เป็น 0 แล้ว ถ้าเช็คสูตร pass ก่อน สินค้าที่นับได้ 0 จะกลายเป็น `pass` เงียบๆ โดยไม่มีใครไปดูของจริง
+- เดิม negSys ที่ effectiveCnt ≠ 0 ลัดไป `stock_adjustment` ข้ามคิวเภสัช — **ห้ามย้อนกลับ**
+- `reEvaluateAuditItems` ใช้กฎเดียวกัน (`si.negSys?'audit':…`) ต้องตรงกันเสมอ ไม่งั้นอัพ R16 ใหม่แล้วสถานะแกว่ง
+- ปลายทาง `stock_adjustment` ยังมาถึงได้ผ่าน Audit Verify เมื่อเภสัชยืนยันว่ายอดไม่ตรง
+- **กับดักที่ต้องรู้:** `skuMap.systemQty` แยก "G=0 จริง" กับ "G ติดลบ" ไม่ออก (clamp แล้ว) — ชุด `_countableSkus` จึงต้องอ่านจาก `state.r01Data` ค่าดิบเท่านั้น (ดู `rebuildMaps`)
+- ทดสอบล็อกไว้: `tests/specs/e2e/scan-behavior.spec.js` (ทั้ง zero และ negSys บวกปกติ), `confirm-count.spec.js` (S-ZERO และ S-NEG → audit)
 
 ## noStock — ไม่มีของจริง ระบบมีสต็อค (สาขายาเท่านั้น, July 2026)
 
@@ -100,11 +117,23 @@ location,SKU,qty
 - สแกนของจริงภายหลัง (effectiveCnt ≠ 0) → flag เป็นหมัน ตกลง rule ปกติ — ไม่ต้องล้างใน `handleBarcode`
 - **flag hygiene 3 จุด** (mutate in place ต้องล้างเอง): `removeScanItem` (✕ undo), `resetStaleScanningItems` (ข้ามวัน), day-rollover scrub ใน `syncToFirestore` (destructure exclusion) — `_resetLocalScanDataToPending` สร้าง object ใหม่ flag หลุดเอง
 - persist ครบทุก layer (localStorage / Firestore / ข้ามเครื่อง) เพราะ sync strip แค่ `retries`/`scans`
-- known gap (ตั้งใจยังไม่แก้ ก.ค. 2026): เภสัชยืนยัน qty=0 ในคิว audit ไม่ได้ (`getPharmacistAuditPendingMap` กรอง `>0`) — item audit ที่นับ 0 ค้างตลอด; noStock ไม่ผ่าน audit เลยไม่ชนบั๊กนี้
+- ~~known gap (ก.ค. 2026): เภสัชยืนยัน qty=0 ไม่ได้~~ → **แก้แล้ว ส.ค. 2026** เมื่อ negSys ถูกบังคับเข้า audit ทุกตัว
+  (negSys ส่วนใหญ่ไม่มีของจริง ถ้ากรอก 0 ไม่ได้จะค้าง audit ถาวร) — ดู "ยอดรีเช็ค 0" ด้านล่าง
+
+**ยอดรีเช็ค 0 = "ตรวจแล้วไม่มีของ" (ส.ค. 2026):**
+- `updatePharmacyRecheckQty` รับ `q >= 0` (เดิมบังคับ `>= 1`) · ปฏิเสธเฉพาะค่าติดลบ/ไม่ใช่ตัวเลข · input `min="0"` ทั้ง `renderScanList` และ `patchScanRow`
+- `getPharmacistAuditPendingMap` รับ `qty >= 0` (เดิม `> 0`) — guard `sd.recheckQty == null` ด้านบนยังกัน "ยังไม่รีเช็ค" ไว้อยู่
+- ⚠️ **`recheckQty === 0` กับ `recheckQty == null` คนละความหมาย ห้ามรวมกัน** — 0 = ตรวจแล้วไม่มีของ (ยืนยันได้), null = ยังไม่ได้ตรวจ (ไม่เข้าคิว)
+- ⚠️ ห้ามเทียบค่าเดิมด้วย `Number(prev)||0` — ตอน `prev` เป็น `undefined` การพิมพ์ 0 จะถูกมองว่า "ค่าเท่าเดิม" แล้ว return เงียบ ต้องเช็ค `prev!=null&&Number(prev)===q`
+- ล้างกลับเป็น "ยังไม่รีเช็ค" ใช้ปุ่ม ✕ (`resetRecheckItem`) ไม่ใช่พิมพ์ 0
 - `reEvaluateAuditItems`: rule เดียวกัน — negSys ไม่ตรง → `stock_adjustment` ไม่หลุดกลับเข้า `audit`
 - Diff ในตาราง Stock Adj + เอกสารปรับสต็อก = `countedQty − 0` = ยอดนับจริง (IRPS ของเกิน) เพราะไม่มี `recheckQty`
 - อัพ R01 ใหม่ item เหล่านี้คงสถานะ (flow July 2026: อัพ R01 ไม่รีเซ็ตอะไรใน scanData เลย — ดู "Audit ข้าม R01 Baseline")
 - ศูนย์จริง (systemQty = 0 ใน R01) **ไม่เข้า rule นี้** — ยังผ่าน audit → เภสัช verify ตามปกติ
+  (ยืนยันกับผู้ใช้ ก.ค. 2026: ระบบ 0 แต่สแกนเจอของ = ให้เภสัชรีเช็คก่อนเสมอ ห้ามลัดไป `stock_adjustment` เอง —
+  ปลายทาง stock_adjustment ยังมาถึงได้ผ่าน Audit Verify เมื่อเภสัชยืนยันว่ายอดไม่ตรง)
+  **ส.ค. 2026 ยังจริงอยู่** และตอนนี้เป็นเส้นทางเดียวของ G=0 แล้ว — กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกจาก G=0
+  จึงยิงครั้งเดียวก็ได้ `countedQty=1` → `audit` ทันที (ปุ่ม 🚫 ยังไม่ขึ้นกับ G=0 เพราะ gate ต้อง `systemQty>0`)
 
 ---
 

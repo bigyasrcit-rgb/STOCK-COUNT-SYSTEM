@@ -8,7 +8,7 @@ DEL/P items, Export Excel, Firestore persistence layers, หรือ Location m
 ## Data Flow
 
 ```
-1. Upload R01.102 + R05.106 + Product Master
+1. Upload R01.102 + R05.106 + Product Branch Master (`{branch}_pm` — ต่อสาขา)
    → loadR01() / loadR05() / loadProductMaster()
    → rebuildMaps() → skuMap, barcodeMap, skuDirectMap
    → init scanData (pending) สำหรับทุก SKU ที่รู้จัก
@@ -42,9 +42,19 @@ DEL/P items, Export Excel, Firestore persistence layers, หรือ Location m
 | E | 4 | SKU |
 | F | 5 | ProductName |
 | G | 6 | SystemQty |
+| P | 15 | หมวดสินค้า → ใช้ตัดสิน "ต้องนับไหม" (เก็บเป็นธง `nc` ไม่เก็บข้อความ) |
 
 - ข้ามเฉพาะแถวที่ qty ว่าง/ไม่ใช่ตัวเลข
 - **qty ≤ 0 (ติดลบ/0) เก็บไว้ด้วยค่าจริง** ไม่ clamp — เพื่อให้ DEL ที่ระบบติดลบแต่มีของจริงบนชั้นนับได้
+- **G = 0 = "ไม่ต้องนับ" (ส.ค. 2026)** — ถูกตัดออกจาก `_countableSkus` → ไม่อยู่ใน Total SKU และไม่อยู่ใน Progress
+  ทั้งตัวเศษและตัวหาร · **G ติดลบยังนับ** (คือการขายของขาด ต้องเดินไปสแกน)
+  ⚠️ ตัดสินจาก `state.r01Data` ค่าดิบเท่านั้น — `skuMap.systemQty` ของสาขายา clamp `negSys` เป็น 0 ไปแล้ว แยกสองเคสนี้ไม่ออก
+- **คอลัมน์ P = หมวดที่ไม่ใช่สินค้าคงคลัง → ไม่ต้องนับ (ส.ค. 2026)** — `_isNonCountR01Category()` ติดธง `nc:1` ตอน `loadR01`
+  - ตัด: ขึ้นต้นด้วย **`11.`** (`R01_NON_COUNT_PREFIXES`) หรือมีคำว่า **`DELETE`** (`R01_NON_COUNT_KEYWORDS`) — เพิ่มหมวดใหม่เติม 2 array นี้ที่เดียว
+  - เทียบเลขหมวดนำหน้า/คำสำคัญ **ไม่เทียบข้อความเต็ม** — ชื่อหมวดในไฟล์จริงมีช่องว่าง/วรรคตอนไม่คงที่
+  - ⚠️ **เก็บแค่ธง `nc` ห้ามเก็บข้อความหมวดลง `r01Data`** — doc `{branch}_r01` มีเพดาน 1 MiB · ข้อความไทย ~45 ตัวอักษร × 5,400 แถว ≈ 750 KB ชนเพดานทันที
+  - ตัดออกเฉพาะจาก `_countableSkus` เท่านั้น — SKU ยังอยู่ครบ: สแกนได้ · Confirm ได้ผลถูกต้อง · เห็นในรายการสินค้า
+  - ⚠️ `auto-r01/auto_r01_import.py` ยังไม่เขียนธง `nc` — ถ้าเปิดใช้ auto import ต้องเพิ่ม logic เดียวกัน ไม่งั้น SKU หมวดพวกนี้จะกลับมานับ
 - Re-upload: `state.r01Data = []` ก่อน → `rebuildMaps()` — scanData ของ SKU เดิมไม่ถูกรีเซ็ต
 - ⚠️ WH: อย่า re-upload R01 กลางรอบ / ในวันรีเช็ค (cross-day) — baseline จะเลื่อน
 - **สาขายา (SRC/KKL/SSS): re-upload R01 ทุกวันได้ตั้งใจ** (baseline หลัง restock) — ดู "R01 Daily Reset" ด้านล่าง
@@ -154,21 +164,20 @@ Debug: `console.log('[R16] TRANDATE col index:')` ใน browser Console
 
 ---
 
+## Product Branch Master — Col D filter (ส.ค. 2026)
+
+**Col D filter: `D` / `P` / `REVIEW` → ข้ามแถวทิ้งทั้งหมด · อื่น → เก็บ** (เดิมข้ามเฉพาะ `REVIEW` แล้วติดแท็ก `A`/`P`)
+- **ไม่มี field `cat` และ `isP` ใน `skuMap` แล้ว** — โหมด Progress CatA, ปุ่มกรอง `CAT[A]` / `P` และแท็ก `P` ถูกถอดออกหมด
+- SKU ที่ Col D = `A` **ยังอยู่ใน catalog ตามปกติ** (แค่ไม่มีแท็กพิเศษอีก)
+
 ## DEL Items
 
-SKU อยู่ใน R01 แต่ไม่อยู่ใน Product Master → `isDel: true` ใน `skuMap`
+SKU อยู่ใน R01 แต่ไม่อยู่ใน Product Branch Master → `isDel: true` ใน `skuMap`
+- ครอบทั้ง SKU ที่ **ไม่มีในไฟล์เลย** และ SKU ที่ **ถูกกรองออกด้วย Col D = D/P** → หลัง ส.ค. 2026 จำนวน DEL เพิ่มขึ้นมาก (ตั้งใจ)
 - แสดงใน popup ด้วย badge แดง **DEL** + ปุ่ม filter **🗑️ DEL**
-- นับ + evaluate ปกติ
+- นับ + evaluate ปกติ · **ยังนับใน Total SKU / Progress ด้วย** ถ้ามีสต็อกใน R01 (`systemQty ≠ 0`)
+  — ตัวหาร Progress ดู R01 อย่างเดียว ไม่ intersect กับ PBM
 - **filter `'pending'`** ใน popup รวม DEL ด้วย (July 2026 — เดิม exclude) → DEL ที่ยังไม่นับ (รวม qty ติดลบ/0) โผล่ใน "รอนับ" พร้อม badge; ปุ่ม **🗑️ DEL** ใช้กรองดูเฉพาะ DEL
-
-## P Items (หมวด P)
-
-Product Master Col D = `P` → เก็บด้วย `cat:'P'`, flag `skuMap[sku].isP = true`
-- แสดง badge **P สีม่วง** (`.tag-p`) ในป็อปอัพ + ปุ่ม filter **🏷️ P**
-- โผล่ใน filter "รอนับ" ด้วย (เหมือน DEL)
-- ต้องอัพ PM ใหม่ 1 ครั้งหลัง deploy เพื่อให้ของเก่าใน cloud มี `cat`
-
-Col D filter: `REVIEW` → ข้าม; `A` → `cat:'A'`; `P` → `cat:'P'`; อื่น → ไม่มี field `cat`
 
 ---
 
@@ -251,7 +260,7 @@ Panel-card `#adjustDocPanel` + popup `#adjustDocPopupOverlay` — แสดง�
 | Firestore `stock_sessions/${branch}` | scan data | 3s หลัง localStorage |
 | Firestore `stock_sessions/${branch}_r01` | R01 master + R16 upload metadata | หลัง upload R01; R16: `r16UploadedAt`/`r16Loaded` merge เข้า `_r01` doc ทุกครั้ง `loadR16()` |
 | Firestore `stock_sessions/${branch}_adjlot` | LOT+ราคา ใบปรับปรุง (เฉพาะ SKU ที่ปรับ) | **กดปุ่ม 💾 บันทึก LOT เท่านั้น**; อ่านตอนเปิด popup ถ้า local ว่าง |
-| Firestore `stock_sessions/global_pm` | Product Master (ใช้ร่วมทุกสาขา) | หลัง PM upload; real-time listener |
+| Firestore `stock_sessions/${branch}_pm` | **Product Branch Master** — catalog ต่อสาขา รวม WH (ส.ค. 2026 — เดิม `global_pm` ใช้ร่วมกัน) | หลัง PM upload; real-time listener · **ไม่ persist localStorage** ทุก reload ดึงจาก cloud |
 | Firestore `stock_sessions/global_r05` | R05 Barcode mapping (ใช้ร่วมทุกสาขา ก.ค. 2026 —เดิม `${branch}_r05`) | หลัง R05 upload (`loadR05`); real-time listener (`startR05Listener`, mirror PM) |
 | Firestore `stock_sessions/WH_location` | Location + zone-staff | หลัง Save ใน Location popup |
 | Firestore `stock_audit_log/${branch}_${date}` | Audit log | หลัง evaluatePendingScans + verify + recheck confirm |
@@ -261,7 +270,8 @@ Strip เฉพาะ: `retries`, `scans`
 
 ⚠️ **ไม่มี history snapshot** — Export Excel ก่อนกด "เริ่มนับใหม่"
 ⚠️ `startNewCount()` ลบ `${branch}_r01` (ล้าง `r16UploadedAt`/`r16Loaded` อัตโนมัติ) **+ `${branch}_adjlot`** (LOT/ราคารอบเก่า) + ล้าง `_lotMap`/`_lotSelected`/`_priceMap` local — ไม่ลบ `global_r05` (shared ทุกสาขา)
-⚠️ `clearAllData()` (admin PIN) ก็**ไม่ลบ** `global_r05` เช่นกัน (เหมือน `global_pm`) — ล้างแค่ local state, resync กลับจาก cloud ตอน reload
+⚠️ `clearAllData()` (admin PIN) ก็**ไม่ลบ** `global_r05` และ `${branch}_pm` — ล้างแค่ local state, resync กลับจาก cloud ตอน reload
+⚠️ `global_pm` เดิมเป็น **legacy read-only** ไม่มีโค้ดอ่าน/เขียนแล้ว **ห้ามลบบน cloud** (เส้นชีวิตของ rollback) และ **ห้ามใส่ fallback กลับไปอ่าน** — สาขาที่ยังไม่อัป PBM ต้องเห็น badge "ยังไม่โหลด"
 ⚠️ ลำดับ: `syncToFirestore(true)` → `rebuildMaps()` (scanData ว่างก่อน)
 ⚠️ **ไฟล์ raw LOT/ราคา (200k แถว) ห้ามขึ้น cloud** — sync เฉพาะ "ผลกรอง" (`_lotMap`/`_lotSelected`/`_priceMap` ของ SKU ที่ปรับ = เล็ก) ผ่านปุ่ม 💾 บันทึก → `${branch}_adjlot` ดู Known Pitfalls
 
