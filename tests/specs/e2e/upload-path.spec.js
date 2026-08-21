@@ -41,8 +41,14 @@ test.describe('CSV upload path', () => {
       catP: state.skuMap.get('S-CATP'),
       catD: state.skuMap.get('S-CATD'),
       reviewInPm: state.productMasterMap.has('S-REVIEW'),
+      catOnA: state.productMasterData.find((r) => r.sku === 'S-CATA')?.cat,
+      catOnBlank: state.productMasterData.find((r) => r.sku === 'S-NOCAT')?.cat,
       countableCount: _countableSkus.size,
       countableZero: _countableSkus.has('S-ZERO'),
+      countableAbcZero: _countableSkus.has('S-ABC0'),
+      countableNoCat: _countableSkus.has('S-NOCAT'),
+      countableNoCatZero: _countableSkus.has('S-NOCAT0'),
+      countablePmOnly: _countableSkus.has('S-PMONLY'),
       countableNeg: _countableSkus.has('S-NEG'),
       countableCatP: _countableSkus.has('S-CATP'),
       countableDel: _countableSkus.has('S-ONLYR01'),
@@ -50,6 +56,7 @@ test.describe('CSV upload path', () => {
       countableDelCat: _countableSkus.has('S-DELCAT'),
       officeSys: state.skuMap.get('S-OFFICE')?.systemQty,
       officeInR01: state.r01Data.some((r) => r.colE === 'S-OFFICE'),
+      noCatSys: state.skuMap.get('S-NOCAT')?.systemQty,
       barcodeToSku: state.barcodeMap.get('B-M24'),
       multiplier: (state.skuMap.get('S-MULTI').barcodes.find((b) => b.barcode === 'B-M24') || {}).unitMultiplier,
     }));
@@ -71,20 +78,32 @@ test.describe('CSV upload path', () => {
     expect(parsed.barcodeToSku).toBe('S-MULTI');     // R05 col A → col E
     expect(parsed.multiplier).toBe(24);              // R05 col H
 
-    // Total SKU / Progress set: R01 rows with systemQty !== 0, regardless of PBM membership
+    // Col D is kept as `cat`, but only for A/B/C — {branch}_pm shares the 1 MiB ceiling with global_r05
+    expect(parsed.catOnA).toBe('A');
+    expect(parsed.catOnBlank).toBeUndefined();
+
+    // Total SKU / Progress set (ส.ค. 2026): G ≠ 0 OR Col D ∈ A/B/C — the A/B/C clause only ever adds
     expect(parsed.countableCount).toBe(F.COUNTABLE_COUNT);
-    expect(parsed.countableZero).toBe(false);        // G = 0 → ไม่ต้องนับ
-    expect(parsed.countableNeg).toBe(true);          // G ติดลบ → ยังต้องนับ
-    expect(parsed.countableCatP).toBe(true);         // Col D = P แต่มีสต็อกค้าง → ยังนับ
-    expect(parsed.countableDel).toBe(true);          // DEL แท้ที่มีสต็อก → ยังนับ
-    // R01 คอลัมน์ P: หมวด "11. …" และ DELETE ไม่นับ แม้มีสต็อก — แต่ยังอยู่ในระบบครบ
+    expect(parsed.countableAbcZero).toBe(true);      // A/B/C ที่ระบบขึ้น 0 → ต้องเดินไปนับ (กติกาที่เพิ่มมา)
+    expect(parsed.countableZero).toBe(true);         // S-ZERO ก็จัดชั้น A → G=0 ไม่ตัดออกอีกแล้ว
+    expect(parsed.countableNeg).toBe(true);          // G ติดลบ → นับตามเดิม
+    expect(parsed.countableNoCat).toBe(true);        // Col D ว่างแต่มีสต็อก → ยังนับตามกติกาเดิม
+    expect(parsed.countableNoCatZero).toBe(false);   // Col D ว่าง + ไม่มีสต็อก = เคสเดียวที่หลุด
+    expect(parsed.countableCatP).toBe(true);         // Col D = P ถูกกรองออกจาก PBM แต่มีสต็อก → ยังนับ
+    expect(parsed.countableDel).toBe(true);          // ไม่มีใน PBM แต่มีสต็อก → ยังนับ
+    expect(parsed.countablePmOnly).toBe(false);      // จัดชั้น A แต่ไม่มีแถวใน R01 → ไม่นับ
+    // R01 คอลัมน์ P ชนะทั้งสองข้อเสมอ: หมวด "11. …" และ DELETE ไม่นับ แม้ Col D = A/C และมีสต็อก
     expect(parsed.countableOffice).toBe(false);
     expect(parsed.countableDelCat).toBe(false);
+    // ทุกตัวที่หลุดจาก Progress ต้องยังอยู่ในระบบครบ — สแกนได้ Confirm ได้ผลถูก
     expect(parsed.officeInR01).toBe(true);           // ไม่ได้ถูกข้ามตอน parse
-    expect(parsed.officeSys).toBe(7);                // systemQty จริงยังอยู่ → Confirm ได้ผลถูก
+    expect(parsed.officeSys).toBe(7);
+    expect(parsed.noCatSys).toBe(5);
 
     // uploads push to the cloud master docs the other devices restore from
     await waitForDoc(PROJECT_ID, 'stock_sessions/SRC_pm', (d) => d && JSON.parse(d.data_json).length === F.pmRows.length);
+    // cat_coded is a console-only marker for "this branch's file was re-uploaded with Col D"
+    expect((await getDoc(PROJECT_ID, 'stock_sessions/SRC_pm')).cat_coded).toBe(true);
     // ...and must NOT write the legacy shared doc (kept read-only on cloud purely for rollback)
     expect(await getDoc(PROJECT_ID, 'stock_sessions/global_pm')).toBeNull();
     await waitForDoc(PROJECT_ID, 'stock_sessions/SRC_r01', (d) => d && d.data_json && JSON.parse(d.data_json).length === F.r01Rows.length);

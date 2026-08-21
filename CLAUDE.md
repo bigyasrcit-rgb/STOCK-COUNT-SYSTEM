@@ -123,19 +123,32 @@ state = {
 **Product Master แยกไฟล์ต่อสาขาแล้ว** — Firestore `stock_sessions/{branch}_pm` (`SRC_pm`/`KKL_pm`/`SSS_pm`/`WH_pm`) ไม่ใช่ `global_pm` ตัวเดียว
 - `getProductMasterMetaRef(branch=currentBranch)` เป็นจุดเดียวที่ผูก doc id · **ไม่มี fallback ไป `global_pm`** โดยเจตนา — สาขาที่ยังไม่อัป PBM ต้องเห็น badge "ยังไม่โหลด" ไม่ใช่หยิบ catalog สาขาอื่นมาใช้เงียบๆ
 - `restoreMasterFromFirestore()` ต้องล้าง `productMasterData`/`productMasterMap` เมื่อ `doc.exists===false` (เดิมเป็น no-op เงียบ ซึ่งไม่มีปัญหาตอน PM เป็น global แต่ตอนนี้ค้าง catalog ของสาขาก่อนหน้าได้)
-- **Col D filter:** ข้ามแถวที่ `D` / `P` / `REVIEW` · ไม่มี field `cat` และ `isP` แล้ว (โหมด Progress CatA + ปุ่มกรอง `CAT[A]`/`P` ถูกถอดออกทั้งหมด)
-- SKU ที่ถูกกรองออกแต่ยังมีสต็อกใน R01 → จัดเป็น **DEL** ตามกลไกเดิม · ยังสแกน/Confirm/เข้าใบปรับสต็อก และ **ยังนับใน Progress ตามปกติ**
-- อัป PBM ลง **สาขาที่เลือกอยู่ตอนนั้น** เท่านั้น — อัปผิดสาขา = catalog สาขานั้นผิดทันทีผ่าน listener · toast แสดงชื่อสาขาไว้กัน (แก้ข้อความต้องแก้ regex ใน `_toastMessageForDevice` คู่กัน)
+- **Col D filter:** ข้ามแถวที่ `D` / `P` / `REVIEW` · ไม่มี field `isP` แล้ว (โหมด Progress CatA + ปุ่มกรอง `CAT[A]`/`P` ถูกถอดออกทั้งหมด)
+- **field `cat`** = ค่า Col D ที่เก็บไว้ **เฉพาะแถว `A`/`B`/`C`** (`_isAbcColD()`) — เป็นตัวตัดสิน `_countableSkus` ดูหัวข้อถัดไป
+  ⚠️ **ห้ามเก็บ `cat` ให้ทุกแถว** — `{branch}_pm` มีเพดาน 1 MiB เหมือน `global_r05` ที่เคยชนแล้วเงียบ · `syncProductMasterToFirestore()` เตือนที่ ≥ 800 KB และ **ต้อง toast error เมื่อเขียนไม่ผ่าน** (ห้าม catch เงียบ)
+- SKU ที่ถูกกรองออกแต่ยังมีสต็อกใน R01 → จัดเป็น **DEL** ตามกลไกเดิม · ยังสแกน/Confirm/เข้าใบปรับสต็อก และ **ยังนับใน Progress** ผ่านเงื่อนไข `G ≠ 0`
+- อัป PBM ลง **สาขาที่เลือกอยู่ตอนนั้น** เท่านั้น — อัปผิดสาขา = catalog **และตัวหาร Progress** ของสาขานั้นผิดทันทีผ่าน listener · toast แสดงชื่อสาขา + จำนวน A/B/C ไว้กัน (แก้ข้อความต้องแก้ regex ใน `_toastMessageForDevice` คู่กัน)
 
-**`_countableSkus` = "SKU ที่ต้องนับ" = SKU ใน R01.102 ที่ `systemQty !== 0` และหมวด (คอลัมน์ P) ไม่ใช่ประเภทที่ไม่ต้องนับ** — สร้างใน `rebuildMaps()` ก่อน early-return ของ R05
-- หมวดที่ไม่นับ: คอลัมน์ P ขึ้นต้น `11.` หรือมีคำว่า `DELETE` — `_isNonCountR01Category()` ติดธง `nc:1` ตอน `loadR01` (เพิ่มหมวดใหม่แก้ที่ `R01_NON_COUNT_PREFIXES`/`R01_NON_COUNT_KEYWORDS`)
+**`_countableSkus` = "SKU ที่ต้องนับ"** — สร้างใน `_rebuildCountableSkus()` ซึ่ง `rebuildMaps()` เรียกก่อน early-return ของ R05
+
+```
+นับ ⟺ มีแถวใน R01.102  และ  หมวด (คอลัมน์ P) ไม่ใช่ประเภทที่ไม่ต้องนับ
+      และ ( G ≠ 0  หรือ  Col D ใน PBM ∈ {A,B,C} )
+```
+
+- `G ≠ 0` = กติกาเดิม (ระบบบอกว่ามีของ → ต้องไปนับ) · `Col D A/B/C` = ที่เพิ่มมา ส.ค. 2026 (สินค้าขายดี → ต้องไปดูของบนชั้นจริง **แม้ระบบขึ้น 0**)
+- ⚠️ **เงื่อนไข A/B/C ต้องเป็น `หรือ` ห้ามเปลี่ยนเป็น `และ`** — มันมีแต่ "เพิ่ม" ไม่มีทางตัดออก จึงทำให้ PBM ไฟล์เก่าที่ไม่มี field `cat` ให้ผลเท่ากติกาเดิมเป๊ะโดยอัตโนมัติ **ไม่ต้องมี feature flag ใดๆ** · ถ้าเปลี่ยนเป็น `และ` ทุกสาขาที่ยังไม่อัป PBM จะได้ Total SKU = 0 ทันทีที่ deploy
+- หมวดที่ไม่นับ: คอลัมน์ P ขึ้นต้น `11.` หรือมีคำว่า `DELETE` — `_isNonCountR01Category()` ติดธง `nc:1` ตอน `loadR01` (เพิ่มหมวดใหม่แก้ที่ `R01_NON_COUNT_PREFIXES`/`R01_NON_COUNT_KEYWORDS`) · **หมวด R01 ชนะทั้งสองข้อเสมอ**
 - ⚠️ **เก็บแค่ธง `nc` ห้ามเก็บข้อความหมวดลง `r01Data`** — `{branch}_r01` มีเพดาน 1 MiB · ข้อความไทย ~45 ตัวอักษร × 5,400 แถว ≈ 750 KB ชนเพดานทันที
-- SKU หมวดนี้ยังอยู่ครบ: สแกนได้ · Confirm ได้ผลถูกต้อง · เห็นในรายการสินค้า — ตัดออกเฉพาะจาก Total SKU/Progress
+- SKU ที่หลุดจากชุดนี้ยังอยู่ครบ: สแกนได้ · Confirm ได้ผลถูกต้อง · เห็นในรายการสินค้า — ตัดออกเฉพาะจาก Total SKU/Progress
 - `_cachedTotalSku = _countableSkus.size` เป็นทั้ง **การ์ด Total SKU และตัวหาร Progress** · ตัวเศษคือ SKU ในชุดเดียวกันที่ Confirm แล้ว
 - **invariant: ตัวเศษกับตัวหารต้องมาจากชุดเดียวกันเสมอ** — เดิมตัวเศษวนจาก `scanData` แต่ตัวหารนับจาก `r01Data` คนละแหล่ง ทำให้ % ทะลุ 100 ได้เมื่อกรองข้างเดียว
-- ⚠️ **ห้ามใช้ `skuMap.systemQty` ตัดสินว่า "ต้องนับไหม"** — สาขายา clamp `negSys` เป็น 0 ไปแล้ว จึงแยก "G=0 จริง (ไม่ต้องนับ)" กับ "G ติดลบ (ต้องนับ = ขายของขาด)" ไม่ออก ต้องอ่านจาก `state.r01Data` ค่าดิบเท่านั้น
-- PBM **ไม่มีผล** กับชุดนี้ — ตัวหารดู R01 อย่างเดียว
-- ไม่มี R01 → Total SKU = 0 จริงๆ (ตัด fallback chain เดิมที่ตกไปใช้ขนาด catalog ทิ้งแล้ว)
+- ⚠️ **ห้ามใช้ `skuMap.systemQty` อ่านค่า G** — สาขายา clamp `negSys` เป็น 0 ไปแล้ว จึงแยก "G=0 จริง" กับ "G ติดลบ (ขายของขาด)" ไม่ออก ต้องอ่านจาก `state.r01Data` ค่าดิบเท่านั้น
+- `cat_coded:true` บน `{branch}_pm` เป็น **marker สำหรับดูบน Console เท่านั้น** ว่าสาขาไหนอัปไฟล์รุ่นใหม่แล้ว — **ไม่มีโค้ดอ่าน** อย่าเอาไปทำ logic
+- ระหว่าง rollout เครื่องรุ่นเก่ายังนับ `G ≠ 0` อย่างเดียว (ไม่รู้จัก `cat`) จึงเห็น Total SKU **น้อยกว่า** เครื่องรุ่นใหม่ — บังคับให้โหลดรุ่นใหม่ครบก่อนอัป PBM ที่มี Col D
+- ⚠️ **PBM เป็นตัวตัดสินตัวหารแล้ว → ทุกจุดที่ PBM/R01 เปลี่ยนต้องรีคำนวณ แม้ R05 ยังมาไม่ถึง** — guard เดิม `if(state.r05Data.length)rebuildMaps()` ทำให้ตัวเลขค้าง จึงต้องมี `else {_rebuildCountableSkus();updateStats();}` คู่กันทุกจุด (`applyProductMasterMeta`, `_applyR01BaselineUpdate`, `loadSession`, `restoreFromFirestore`, `restoreMasterFromFirestore` สาย "ไม่มี PBM")
+  เรียก `rebuildMaps()` ทั้งก้อนแทนไม่ได้ เพราะมันเคลียร์ `skuMap`/`barcodeMap` ก่อนแล้ว early-return
+- ไม่มี R01 → Total SKU = 0 จริงๆ (ตัด fallback chain เดิมที่ตกไปใช้ขนาด catalog ทิ้งแล้ว) · SKU ที่อยู่ใน PBM แต่ไม่มีแถวใน R01 ไม่นับ
 - การ์ด `SKU BRANCH` ถูกลบ · WH เห็น Total SKU บน Desktop แต่ซ่อนบน PDA · ป้าย `Stock100 · `/`CatA · ` ใต้ Progress ถูกตัดออก
 - ⚠️ ลบ/เพิ่มการ์ดใน `.stats-bar` ต้องไล่เลข `nth-child` ใน `@media(max-width:600px)` และจำนวนคอลัมน์ใน `@media(max-width:820px)` ใหม่ทุกครั้ง
 
@@ -178,7 +191,7 @@ pending → scanning → pass
 
 **กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกหมดแล้ว (ส.ค. 2026) — ห้ามนำกลับมา**
 ทั้ง G=0 และ G ติดลบ สแกนแล้ว **บวกตามปกติ** เหมือน SKU อื่น
-- **G = 0** → ตัดออกจาก Progress ทั้งตัวเศษและตัวหาร (ดู §Total SKU / Progress) ไม่ต้องเดินไปสแกนปิดยอด · ยิงมาจริง → `audit`
+- **G = 0** → ยิงมาจริง → `audit` · จะอยู่ใน Progress หรือไม่ขึ้นกับ PBM Col D (A/B/C = อยู่) ดู §Total SKU / Progress
 - **G ติดลบ (`negSys`)** → **บังคับเป็น `audit` เสมอไม่ว่านับได้เท่าไร** (เช็คก่อนสูตร pass ใน `_buildPendingScanEvaluation` และตรงกับ `reEvaluateAuditItems`)
   เหตุผล: ยอดระบบติดลบ = ข้อมูลสต็อกผิดแน่นอน ต้องให้เภสัชไปดูของบนชั้นจริงทุกตัว ห้ามลัดไป `stock_adjustment` เอง และห้ามเป็น `pass`
   ⚠️ ต้องเช็ค `negSys` **ก่อน** `effectiveCnt===sys` เพราะ systemQty ถูก clamp เป็น 0 แล้ว → นับ 0 จะกลายเป็น pass เงียบๆ
@@ -214,7 +227,7 @@ Audit Verify ของเภสัชก็เช่นกัน — สแก�
 | `{branch}` | session หลัก — `schemaVersion:2` = metadata อย่างเดียว (ไม่มี `scanData`/`scanListMap`) |
 | `{branch}/items/{sku}` | **schema v2:** 1 document ต่อ SKU ต่อรอบนับ (subcollection) |
 | `{branch}_r01` | R01 master/version + R16 upload metadata |
-| `{branch}_pm` | **Product Branch Master** — catalog ชื่อสินค้าต่อสาขา (`SRC_pm`/`KKL_pm`/`SSS_pm`/`WH_pm`) · ส.ค. 2026 แทน `global_pm` |
+| `{branch}_pm` | **Product Branch Master** — catalog ชื่อสินค้า + การจัดชั้น Col D ต่อสาขา (`SRC_pm`/`KKL_pm`/`SSS_pm`/`WH_pm`) · ส.ค. 2026 แทน `global_pm` · field `cat_coded:true` = แถวมี `cat` แล้ว (ตัวสวิตช์ของกติกา A/B/C) |
 | `global_r05` | shared Barcode master (ยัง global — ใช้ร่วมทุกสาขา) |
 | `global_pm` | **legacy read-only** — ไม่มีโค้ดอ่าน/เขียนแล้ว เก็บไว้เพื่อ rollback **ห้ามลบ** |
 | `WH/confirm_ops/{opId}` | WH workflow v2 operation; publish ทั้งชุดด้วย `state:'committed'` |

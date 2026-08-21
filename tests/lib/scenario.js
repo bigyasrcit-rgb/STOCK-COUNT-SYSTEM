@@ -48,7 +48,8 @@ async function dumpCatalogState(where, app) {
 }
 
 async function bootFreshCount(browser, opts = {}) {
-  const { branch = 'SRC', role = 'pharmacist', user = 'Tester', mode = 'desktop', projectId = PROJECT_ID, clear = true } = opts;
+  // pmCatCoded:false seeds a pre-ส.ค.-2026 PBM (no Col D) — the countable set must fall back to G≠0
+  const { branch = 'SRC', role = 'pharmacist', user = 'Tester', mode = 'desktop', projectId = PROJECT_ID, clear = true, pmCatCoded = true } = opts;
   if (clear) await clearAll(projectId);
 
   const app = await newAppContext(browser, { branch, role, user, mode, projectId, firestorePort: emuPort(), login: true });
@@ -64,7 +65,7 @@ async function bootFreshCount(browser, opts = {}) {
   });
 
   // Masters must be seeded AFTER startNewCount (it deletes {branch}_r01).
-  await seedMasters(projectId, { branch });
+  await seedMasters(projectId, { branch, pmCatCoded });
   await restoreMastersUntilReady(app);
 
   app.epoch = await app.page.evaluate(() => _countResetAt);

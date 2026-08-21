@@ -99,7 +99,7 @@ effectiveQty = countedQty + soldQty + r16103Qty - inboundQty
 | `{branch}` | session หลักของ branch (schema v2 = metadata เท่านั้น) |
 | `{branch}/items/{sku}` | schema v2: 1 document ต่อ SKU ต่อรอบนับ (subcollection) |
 | `{branch}_r01` | R01 master/version และ R16 metadata ของสาขา |
-| `{branch}_pm` | Product Branch Master — catalog ต่อสาขา (ส.ค. 2026 แทน `global_pm`) |
+| `{branch}_pm` | Product Branch Master — catalog + การจัดชั้น Col D ต่อสาขา (ส.ค. 2026 แทน `global_pm`) · `cat_coded:true` = เก็บ `cat` แล้ว = ใช้กติกา A/B/C ได้ |
 | `global_pm` | legacy read-only — ไม่มีโค้ดอ่าน/เขียนแล้ว เก็บไว้เพื่อ rollback ห้ามลบ |
 | `global_r05` | Barcode master R05 (ยัง global ใช้ร่วมทุกสาขา) |
 | `WH/confirm_ops/{opId}` | WH workflow v2 operation; authoritative เมื่อ `state==='committed'` เท่านั้น |
@@ -199,8 +199,9 @@ R01/R16 master
 
 | (ก.ค. 2026) | session blob ชนเพดาน 1 MiB ของ Firestore เมื่อนับครบทั้งสาขา (~1.6 MB) แล้ว `ref.set()` throw โดยโชว์แค่ `'Sync Error'` — ข้อมูลนับหายเงียบ | `scanData` ต้องอยู่ใน `{branch}/items/{sku}` (schema v2); `_reportSyncError()` ต้องรายงานกรณีเกินขนาดให้ชัดแทน throw เงียบ; ห้าม dual-write blob+items |
 | (ส.ค. 2026) | `WH_count_confirmations` เก็บ SKU เป็น dynamic map จนชนเพดาน 40,000 index entries ที่ 873 markers ทำให้ Supervisor Confirm ต่อไม่ได้ ทั้งที่ document ยังไม่ถึง 1 MiB | ห้ามเพิ่ม final ลง legacy map; ใช้ `WH/confirm_ops/{opId}/results/{sku}` และ atomic committed pointer, เก็บ legacy read-only ระหว่าง migration และ roll-forward หลังมี post-cutover commit |
-| (ส.ค. 2026) | Progress มีตัวเศษกับตัวหารมาคนละแหล่ง (ตัวเศษวนจาก `scanData`, ตัวหารนับจาก `r01Data`) → ถ้ากรอง SKU ออกข้างเดียว % ทะลุ 100 ได้ · และสินค้าที่ระบบเหลือ 0 ถูกนับเป็นเป้าหมายที่ต้องเดินไปสแกนป้ายชั้น | **ตัวเศษกับตัวหารต้องมาจาก `_countableSkus` ชุดเดียวกันเสมอ** ห้ามแยกแหล่งคำนวณ · **ห้ามใช้ `skuMap.systemQty` แยก "G=0" กับ "G ติดลบ"** เพราะสาขายา clamp `negSys` เป็น 0 แล้ว ต้องอ่าน `state.r01Data` ค่าดิบ · G=0 ไม่อยู่ใน Progress แต่ยิงมาแล้วต้องได้ `audit` |
+| (ส.ค. 2026) | Progress มีตัวเศษกับตัวหารมาคนละแหล่ง (ตัวเศษวนจาก `scanData`, ตัวหารนับจาก `r01Data`) → ถ้ากรอง SKU ออกข้างเดียว % ทะลุ 100 ได้ | **ตัวเศษกับตัวหารต้องมาจาก `_countableSkus` ชุดเดียวกันเสมอ** ห้ามแยกแหล่งคำนวณ · **ห้ามใช้ `skuMap.systemQty` แยก "G=0" กับ "G ติดลบ"** เพราะสาขายา clamp `negSys` เป็น 0 แล้ว ต้องอ่าน `state.r01Data` ค่าดิบ |
 | (ส.ค. 2026) | Product Master เป็นไฟล์กลางไฟล์เดียวทุกสาขา ทำให้ Total SKU เป็นเลขทั้งบริษัทและต้องมีการ์ด `SKU BRANCH` ซ้อน | PM เป็น `{branch}_pm` ต่อสาขา · **ห้ามใส่ fallback ไป `global_pm`** (สาขาที่ยังไม่อัปต้องเห็น "ยังไม่โหลด" ไม่ใช่ catalog สาขาอื่น) · `restoreMasterFromFirestore` ต้องล้าง PM เมื่อ doc ไม่มี · ห้ามลบ `global_pm` บน cloud (rollback) |
+| (ส.ค. 2026) | กติกา "นับเฉพาะ R01 ที่ G ≠ 0" ทำให้สินค้าขายดี (PBM Col D = A/B/C) ที่ระบบขึ้นสต็อก 0 หลุดจากงานนับ ทั้งที่ต้องเดินไปดูของบนชั้นจริงทุกครั้ง | `_countableSkus` = R01 · หมวด Col P นับได้ · **และ ( `G ≠ 0` หรือ PBM Col D ∈ {A,B,C} )** · ⚠️ **ต้องเป็น `หรือ` ห้ามเป็น `และ`** — เงื่อนไข A/B/C มีแต่เพิ่ม ทำให้ PBM ไฟล์เก่าที่ไม่มี `cat` ให้ผลเท่ากติกาเดิมเองโดยไม่ต้องมี feature flag · เปลี่ยนเป็น `และ` = ทุกสาขาที่ยังไม่อัป PBM ได้ Total SKU = 0 ทันที · หมวด R01 ชนะทั้งสองข้อเสมอ · เก็บ `cat` เฉพาะแถว A/B/C — `{branch}_pm` มีเพดาน 1 MiB เหมือน `global_r05` และ `syncProductMasterToFirestore` ต้อง toast error เมื่อเขียนไม่ผ่าน ห้าม catch เงียบ · PBM มีผลกับตัวหารแล้ว ทุกจุดที่ PBM/R01 เปลี่ยนต้องรีคำนวณ **แม้ R05 ยังมาไม่ถึง** |
 
 สถานะปัจจุบันของการแก้ WH: โค้ดรุ่นใหม่ถูก commit/push แล้ว และเขียนผลยืนยันใหม่ผ่าน `WH/confirm_ops/{opId}/results/{sku}` เท่านั้น จึงไม่ควรชนเพดาน dynamic-map เดิมซ้ำในรอบถัดไป เมื่อแก้หรือ deploy ที่เกี่ยวข้อง ต้อง Publish `firestore.rules` ก่อน/พร้อม deploy เว็บ และบังคับให้ Supervisor กับ PDA ทุกเครื่องโหลดรุ่นใหม่ หาก Confirm ยังล้มเหลว ให้ตรวจ Rules/runtime version, R01/R16 readiness/version, confirm lock, network และ quota; ห้ามลบ legacy markers หรือเริ่มรอบใหม่เพื่อแก้เฉพาะหน้า
 
@@ -287,7 +288,8 @@ Git safety:
 - Firestore Rules: copy และ Publish ผ่าน Firebase Console หลัง review; ถ้า runtime เพิ่ม subcollection ใหม่ต้อง Publish Rules ที่รองรับก่อน deploy เว็บ มิฉะนั้น client ทุกเครื่องจะได้ `permission-denied`
 - Android: bump version, update `version.json`, commit, tag release และ push tags
 - **Product Branch Master ต้องอัปทีละสาขา 4 รอบ** (SRC/KKL/SSS/WH) — สลับสาขาก่อนอัปทุกครั้งและตรวจชื่อสาขาบนหัวจอ
-  ไฟล์ลงที่ `{branch}_pm` ของ**สาขาที่เลือกอยู่ตอนนั้น** อัปผิดสาขา = catalog สาขานั้นผิดทันทีผ่าน listener
+  ไฟล์ลงที่ `{branch}_pm` ของ**สาขาที่เลือกอยู่ตอนนั้น** อัปผิดสาขา = catalog **และตัวหาร Progress** ของสาขานั้นผิดทันทีผ่าน listener
+  ตั้งแต่ ส.ค. 2026 การอัป PBM **เปลี่ยนตัวหาร Progress ทุกเครื่องของสาขานั้นทันที** (PBM Col D ∈ A/B/C เป็นตัวตัดสิน) — คำนวณเลขที่คาดหวังใน Excel ไว้ก่อน, ตรวจ toast ว่าจำนวน `A/B/C` ไม่เป็น 0 และแจ้งหน้างานล่วงหน้า ไม่งั้นจะถูกรายงานว่า "ระบบพัง"
 - หลังแก้ behavior ให้ update `CLAUDE.md` หรือ skill ที่เกี่ยวข้อง เพื่อไม่ให้ agent รอบถัดไปย้อน Bug เดิม
 
 Baseline ขณะเขียนเอกสารนี้คือ `30c57ca` (`Move pharmacy confirmation to desktop`) ให้ตรวจ commit ล่าสุดทุกครั้ง เพราะเอกสารนี้อาจตามหลังโค้ดในอนาคต

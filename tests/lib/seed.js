@@ -1,19 +1,23 @@
 // Seed the emulator with the master-data doc set the app restores from.
 // Doc shapes mirror the app's own writers:
-//   {branch}_pm  (syncProductMasterToFirestore): { branch, data_json, row_count, updated_at_text }
+//   {branch}_pm  (syncProductMasterToFirestore): { branch, data_json, row_count, cat_coded, updated_at_text }
 //                 ← Product Branch Master: 1 doc ต่อสาขา (ส.ค. 2026 แทน global_pm เดิม)
+//                   cat_coded is a console-only marker; the countable rule reads `cat` on the rows.
+//                   pmCatCoded:false seeds pmRowsNoCat = a pre-ส.ค.-2026 file (no Col D anywhere).
 //   global_r05   (syncMasterToFirestore):        { data_json }   ← ยัง global อยู่ (ใช้ร่วมทุกสาขา)
 //   {branch}_r01 (+ syncR16MetaToFirestore):     { data_json, r01UploadedAt, r01Version, r16* meta }
 const { adminDb } = require('./emulator');
 const F = require('./fixtures');
 
-async function seedMasters(projectId, { branch = 'SRC', r01Version = 'R01-TEST-1' } = {}) {
+async function seedMasters(projectId, { branch = 'SRC', r01Version = 'R01-TEST-1', pmCatCoded = true } = {}) {
   const db = adminDb(projectId);
+  const pm = pmCatCoded ? F.pmRows : F.pmRowsNoCat;
   await Promise.all([
     db.doc(`stock_sessions/${branch}_pm`).set({
       branch,
-      data_json: JSON.stringify(F.pmRows),
-      row_count: F.pmRows.length,
+      data_json: JSON.stringify(pm),
+      row_count: pm.length,
+      ...(pmCatCoded ? { cat_coded: true } : {}),
       updated_at_text: 'test-fixture',
     }),
     db.doc('stock_sessions/global_r05').set({ data_json: JSON.stringify(F.r05Rows) }),

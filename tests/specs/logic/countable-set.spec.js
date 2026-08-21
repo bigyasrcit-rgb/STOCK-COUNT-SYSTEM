@@ -1,10 +1,13 @@
-// "SKU ที่ต้องนับ" (_countableSkus) = SKU ใน R01.102 ที่ systemQty ≠ 0 — ตัวเดียวที่อยู่เบื้องหลัง
-// ทั้งการ์ด Total SKU และตัวเศษ/ตัวหารของ Progress
+// "SKU ที่ต้องนับ" (_countableSkus) = มีแถวใน R01.102 · หมวด Col P ไม่ใช่ 11./DELETE
+//                                     และ ( G ≠ 0  หรือ  Col D ใน PBM ∈ {A,B,C} )
+// ตัวเดียวที่อยู่เบื้องหลังทั้งการ์ด Total SKU และตัวเศษ/ตัวหารของ Progress
 //
-// สองกับดักที่เทสนี้ล็อกไว้:
-//  1) ต้องอ่านจาก state.r01Data (ค่าดิบ) ไม่ใช่ skuMap.systemQty — สาขายา clamp negSys เป็น 0 ไปแล้ว
-//     ถ้าใช้ skuMap จะแยก "G=0 จริง (ไม่ต้องนับ)" กับ "G ติดลบ (ต้องนับ)" ไม่ออก
-//  2) PBM ไม่มีผลกับชุดนี้ — SKU ที่ Col D=D/P ถูกกรองออกจาก PBM แต่ยังมีสต็อกใน R01 ต้องนับตามปกติ
+// กับดักที่เทสนี้ล็อกไว้:
+//  1) A/B/C ที่ระบบขึ้นสต็อก 0 ต้อง "นับ" — คือทั้งหมดของกติกาที่เพิ่มมา ส.ค. 2026
+//  2) เงื่อนไข A/B/C มีแต่เพิ่ม ไม่มีทางตัดออก → PBM ไฟล์เก่าที่ไม่มี `cat` ต้องได้ผลเท่ากติกาเดิมเป๊ะ
+//     (ถ้าใครเผลอเปลี่ยน OR เป็น AND ทุกสาขาที่ยังไม่อัป PBM จะได้ Total SKU = 0 ทันที)
+//  3) หมวดใน R01 (ธง nc) ชนะทั้งสองข้อเสมอ
+//  4) ต้องอ่าน G จาก state.r01Data (ค่าดิบ) ไม่ใช่ skuMap.systemQty ที่ clamp negSys เป็น 0 แล้ว
 const { test, expect, bootBare, closeApp } = require('../../lib/hooks');
 
 // สร้างชุดข้อมูลสังเคราะห์ตรงเข้า state แล้วเรียก rebuildMaps() ของจริง (ไม่แตะไฟล์ production)
@@ -21,32 +24,74 @@ async function countableFrom(page, { r01, pm }) {
   }, { r01, pm });
 }
 
-test('_countableSkus — G≠0 เท่านั้นที่นับ, ติดลบยังนับ, PBM ไม่มีผล', async ({ browser }) => {
+test('_isAbcColD — เทียบเป๊ะเฉพาะ A/B/C', async ({ browser }) => {
+  const app = await bootBare(browser);
+  const out = await app.page.evaluate(() => [
+    _isAbcColD('A'), _isAbcColD('B'), _isAbcColD('C'),
+    _isAbcColD(' a '),        // trim + uppercase
+    _isAbcColD('D'), _isAbcColD('P'), _isAbcColD('REVIEW'),
+    _isAbcColD('N'), _isAbcColD('E'),   // ค่าอื่นที่รอด filter → ไม่นับ
+    _isAbcColD('AB'), _isAbcColD('A1'),
+    _isAbcColD(''), _isAbcColD(null), _isAbcColD(undefined),
+  ]);
+  expect(out).toEqual([
+    true, true, true, true,
+    false, false, false,
+    false, false,
+    false, false,
+    false, false, false,
+  ]);
+  await closeApp(app);
+});
+
+test('_countableSkus — ตาราง P1–P8: นับเมื่อ G ≠ 0 หรือ Col D เป็น A/B/C', async ({ browser }) => {
   const app = await bootBare(browser);
   await app.page.evaluate(() => { currentBranch = 'SRC'; });   // สาขายา → negSys clamp ทำงาน
 
   const r01 = [
-    { colE: 'A-POS', productName: 'positive', systemQty: 5 },
-    { colE: 'B-ZERO', productName: 'zero', systemQty: 0 },
-    { colE: 'C-NEG', productName: 'negative', systemQty: -3 },
-    { colE: 'D-NEGZERO', productName: 'minus zero', systemQty: -0 },
-    { colE: 'E-DROPPED', productName: 'col D = P (ไม่อยู่ใน PBM)', systemQty: 2 },
-    { colE: 'F-DROPZERO', productName: 'col D = D + สต็อก 0', systemQty: 0 },
+    { colE: 'P1-ABC-STOCK', productName: 'A + มีของ', systemQty: 5 },
+    { colE: 'P2-ABC-ZERO', productName: 'A + ระบบขึ้น 0', systemQty: 0 },
+    { colE: 'P3-NOCAT-STOCK', productName: 'Col D ว่าง + มีของ', systemQty: 5 },
+    { colE: 'P4-NOCAT-ZERO', productName: 'Col D ว่าง + 0', systemQty: 0 },
+    { colE: 'P5-DROPPED', productName: 'Col D = D (ถูกกรองออกจาก PBM)', systemQty: 5 },
+    { colE: 'P6-NOTINPM', productName: 'ไม่มีใน PBM', systemQty: 5 },
+    { colE: 'P8-NONCOUNT', productName: 'A แต่หมวด 11.', systemQty: 5, nc: 1 },
+    { colE: 'P9-ABC-NEG', productName: 'B + ระบบติดลบ', systemQty: -3 },
   ];
-  // PBM มีเฉพาะ 4 ตัวแรก — E/F ถูกกรองออกเพราะ Col D = D/P
-  const pm = r01.slice(0, 4).map((r) => ({ sku: r.colE, productName: r.productName, unitPrice: 10 }));
+  const pm = [
+    { sku: 'P1-ABC-STOCK', productName: 'A + มีของ', unitPrice: 10, cat: 'A' },
+    { sku: 'P2-ABC-ZERO', productName: 'A + ระบบขึ้น 0', unitPrice: 10, cat: 'A' },
+    { sku: 'P3-NOCAT-STOCK', productName: 'Col D ว่าง + มีของ', unitPrice: 10 },
+    { sku: 'P4-NOCAT-ZERO', productName: 'Col D ว่าง + 0', unitPrice: 10 },
+    // P5 / P6 ไม่อยู่ใน PBM (P5 ถูก parser กรองทิ้งตั้งแต่ตอนอ่านไฟล์)
+    { sku: 'P7-PMONLY', productName: 'A แต่ไม่มีแถวใน R01', unitPrice: 10, cat: 'A' },
+    { sku: 'P8-NONCOUNT', productName: 'A แต่หมวด 11.', unitPrice: 10, cat: 'A' },
+    { sku: 'P9-ABC-NEG', productName: 'B + ระบบติดลบ', unitPrice: 10, cat: 'B' },
+  ];
 
   const out = await countableFrom(app.page, { r01, pm });
 
-  expect(out.countable).toEqual(['A-POS', 'C-NEG', 'E-DROPPED']);
-  expect(out.total).toBe(3);
-  expect(out.countable).not.toContain('B-ZERO');      // G = 0 → ไม่ต้องนับ
-  expect(out.countable).not.toContain('D-NEGZERO');   // -0 === 0 → ไม่ต้องนับ
-  expect(out.countable).not.toContain('F-DROPZERO');  // นอก PBM แต่ G = 0 ก็ยังไม่นับ
-  expect(out.countable).toContain('E-DROPPED');       // นอก PBM แต่มีสต็อก → ต้องนับ
+  expect(out.countable).toEqual([
+    'P1-ABC-STOCK', 'P2-ABC-ZERO', 'P3-NOCAT-STOCK', 'P5-DROPPED', 'P6-NOTINPM', 'P9-ABC-NEG',
+  ]);
+  expect(out.total).toBe(6);
+  expect(out.countable).toContain('P2-ABC-ZERO');           // P2 — เคสหลักที่กติกานี้เพิ่มเข้ามา
+  expect(out.countable).toContain('P3-NOCAT-STOCK');        // P3 — มีของ → ยังต้องนับแม้ไม่จัดชั้น
+  expect(out.countable).toContain('P5-DROPPED');            // P5 — Col D = D แต่มีของ → ยังต้องนับ
+  expect(out.countable).toContain('P6-NOTINPM');            // P6 — ไม่มีใน PBM แต่มีของ → ยังต้องนับ
+  expect(out.countable).not.toContain('P4-NOCAT-ZERO');     // P4 — ไม่จัดชั้น + ไม่มีของ = ไม่ต้องนับ
+  expect(out.countable).not.toContain('P7-PMONLY');         // P7 — ไม่มีแถวใน R01
+  expect(out.countable).not.toContain('P8-NONCOUNT');       // P8 — หมวด R01 ชนะ Col D
 
-  // กับดักที่ 1: negSys ถูก clamp เป็น 0 ใน skuMap แล้ว — ยืนยันว่าชุด countable ไม่ได้อ่านจากตรงนั้น
-  const neg = await app.page.evaluate(() => state.skuMap.get('C-NEG'));
+  // ของที่หลุดจาก Progress ต้องยังอยู่ในแคตตาล็อกครบ — สแกนได้ Confirm ได้ผลถูกต้อง
+  const kept = await app.page.evaluate(() => ({
+    nocatZero: state.skuMap.get('P4-NOCAT-ZERO')?.systemQty,
+    nonCount: state.skuMap.get('P8-NONCOUNT')?.systemQty,
+  }));
+  expect(kept).toEqual({ nocatZero: 0, nonCount: 5 });
+
+  // กับดัก negSys clamp: countable ต้องไม่ได้ตัดสินจาก skuMap.systemQty
+  const neg = await app.page.evaluate(() => state.skuMap.get('P9-ABC-NEG'));
   expect(neg.systemQty).toBe(0);
   expect(neg.negSys).toBeTruthy();
 
@@ -70,24 +115,31 @@ test('_isNonCountR01Category — เทียบเลขหมวดนำห�
   await closeApp(app);
 });
 
-test('_countableSkus — หมวดที่ไม่ใช่สินค้า (flag nc) ไม่นับ แม้ G ≠ 0', async ({ browser }) => {
+// นี่คือทางเดินจริงของทุกสาขาจนกว่าจะอัป PBM ใหม่ — ถ้าพัง Total SKU กลายเป็น 0 ทั้งระบบทันทีที่ deploy
+test('_countableSkus — PBM ไม่มี Col D → ได้ผลเท่ากติกาเดิม G ≠ 0 เป๊ะ', async ({ browser }) => {
   const app = await bootBare(browser);
   await app.page.evaluate(() => { currentBranch = 'SRC'; });
 
   const r01 = [
-    { colE: 'A-NORMAL', productName: 'ยาปกติ', systemQty: 5 },
-    { colE: 'B-OFFICE', productName: 'ปากกา', systemQty: 7, nc: 1 },   // หมวด 11 — ติดธงตอน loadR01
-    { colE: 'C-DELETED', productName: 'ของเลิกขาย', systemQty: 9, nc: 1 },
+    { colE: 'A-POS', productName: 'มีของ', systemQty: 5 },
+    { colE: 'B-ZERO', productName: 'สต็อก 0', systemQty: 0 },
+    { colE: 'C-NEG', productName: 'ติดลบ', systemQty: -3 },
+    { colE: 'D-NEGZERO', productName: 'minus zero', systemQty: -0 },
+    { colE: 'E-NONCOUNT', productName: 'หมวด 11.', systemQty: 4, nc: 1 },
   ];
-  const pm = r01.map((r) => ({ sku: r.colE, productName: r.productName, unitPrice: 10 }));
-  const out = await countableFrom(app.page, { r01, pm });
+  const pmNoCat = r01.map((r) => ({ sku: r.colE, productName: r.productName, unitPrice: 10 }));
 
-  expect(out.countable).toEqual(['A-NORMAL']);
-  expect(out.total).toBe(1);
+  const legacy = await countableFrom(app.page, { r01, pm: pmNoCat });
+  expect(legacy.countable).toEqual(['A-POS', 'C-NEG']);
+  expect(legacy.total).toBe(2);
+  expect(legacy.countable).not.toContain('D-NEGZERO');   // -0 === 0
+  expect(legacy.countable).not.toContain('E-NONCOUNT');  // หมวด R01 ยังชนะ
 
-  // แต่ต้องยังอยู่ใน catalog ครบ — สแกนได้ Confirm ได้ผลถูกต้อง
-  const office = await app.page.evaluate(() => state.skuMap.get('B-OFFICE'));
-  expect(office.systemQty).toBe(7);
+  // ไม่มี PBM เลยก็ต้องได้ชุดเดียวกัน (สาขาที่ badge ขึ้น "ยังไม่โหลด")
+  const noPm = await countableFrom(app.page, { r01, pm: [] });
+  expect(noPm.countable).toEqual(['A-POS', 'C-NEG']);
+  expect(noPm.total).toBe(2);
+
   await closeApp(app);
 });
 
@@ -97,7 +149,7 @@ test('_countableSkus — ไม่มี R01 = 0 (ไม่ fallback ไปข�
 
   const out = await countableFrom(app.page, {
     r01: [],
-    pm: [{ sku: 'X-1', productName: 'in PBM only', unitPrice: 10 }],
+    pm: [{ sku: 'X-1', productName: 'in PBM only', unitPrice: 10, cat: 'A' }],
   });
 
   expect(out.countable).toEqual([]);

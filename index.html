@@ -2538,7 +2538,8 @@ function applyProductMasterMeta(pmMeta){
       state.productMasterMap.clear();
       state.productMasterData.forEach(r=>state.productMasterMap.set(r.sku,r.productName));
       document.getElementById('badgeProductMaster').textContent='Ready';
-      if(state.r05Data.length)rebuildMaps();
+      // PBM เป็นตัวตัดสินตัวหาร Progress แล้ว — R05 ยังไม่มาก็ต้องรีคำนวณ countable ทันที
+      if(state.r05Data.length)rebuildMaps(); else {_rebuildCountableSkus();updateStats();}
     }catch(e){console.warn('PM data parse error:',e.message);}
   }
   if(pmMeta.updated_at){_setPmTs(formatThaiDateTime(pmMeta.updated_at.toDate()));}
@@ -2923,21 +2924,31 @@ function parseFile(file, callback) {
   }
 }
 
+// ─── PBM คอลัมน์ D = การจัดชั้นตามยอดขาย (ส.ค. 2026) ───
+// A = ขายดีมาก · B = ปานกลาง · C = ขายได้เรื่อยๆ → 3 ค่านี้คือ "สินค้าที่ต้องเดินไปนับ"
+// เทียบเป๊ะเท่านั้น: ค่าว่าง / N / E หรืออะไรก็ตามที่รอด filter D/P/REVIEW = ไม่ต้องนับ
+// ⚠️ ตัวหาร Progress ยึดชุดนี้แล้ว (ไม่ใช่ R01 G≠0 เหมือนก่อน ส.ค. 2026) — ดู _rebuildCountableSkus()
+const PM_COUNT_COL_D=['A','B','C'];
+function _isAbcColD(colD){return PM_COUNT_COL_D.includes((colD??'').toString().trim().toUpperCase());}
+
 function loadProductMaster(event) {
   const file=event.target.files[0]; if(!file)return;
   parseFile(file,rows=>{
-    state.productMasterData=[]; let sk=0,priced=0;
+    state.productMasterData=[]; let sk=0,priced=0,abc=0;
     // Col D filter (ส.ค. 2026): ข้าม D / P / REVIEW — เดิมข้ามเฉพาะ REVIEW แล้วติดแท็ก cat A/P
-    // SKU ที่ถูกข้ามแต่ยังมีสต็อกใน R01 จะกลายเป็น DEL ใน rebuildMaps และ "ยังนับใน Progress ตามปกติ"
-    // (ตัวหาร Progress ดู R01 อย่างเดียว ไม่ intersect กับ PBM — ดู _countableSkus)
-    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const sku=(r[0]??'').toString().trim();const name=(r[1]??'').toString().trim();const colD=(r[3]??'').toString().trim().toUpperCase();if(!sku){sk++;continue;}if(colD==='D'||colD==='P'||colD==='REVIEW'){sk++;continue;}const unitPrice=_parseProductMasterPrice(r[9]);if(unitPrice!==null)priced++;state.productMasterData.push({sku,productName:name,unitPrice});}
+    // SKU ที่ถูกข้ามแต่ยังมีสต็อกใน R01 จะกลายเป็น DEL ใน rebuildMaps และหลุดจาก Progress ด้วย
+    // (ตัวหาร Progress = PBM Col D ∈ A/B/C ∩ R01 — ดู _rebuildCountableSkus)
+    // ⚠️ เก็บ `cat` เฉพาะแถว A/B/C เท่านั้น — {branch}_pm มีเพดาน 1 MiB เหมือน global_r05
+    //    การเขียน cat:'' ให้ทุกแถวคือเพิ่ม byte ฟรีหลักหมื่นโดยไม่ได้ข้อมูลเพิ่ม
+    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const sku=(r[0]??'').toString().trim();const name=(r[1]??'').toString().trim();const colD=(r[3]??'').toString().trim().toUpperCase();if(!sku){sk++;continue;}if(colD==='D'||colD==='P'||colD==='REVIEW'){sk++;continue;}const unitPrice=_parseProductMasterPrice(r[9]);if(unitPrice!==null)priced++;const isAbc=_isAbcColD(colD);if(isAbc)abc++;state.productMasterData.push({sku,productName:name,unitPrice,...(isAbc?{cat:colD}:{})});}
     state.productMasterMap.clear();
     state.productMasterData.forEach(r=>state.productMasterMap.set(r.sku,r.productName));
     document.getElementById('badgeProductMaster').textContent='Ready';
     document.getElementById('fileProductMaster').nextElementSibling.style.borderColor='var(--green)';
     const _pmNow=new Date();_setPmTs(`${String(_pmNow.getHours()).padStart(2,'0')}:${String(_pmNow.getMinutes()).padStart(2,'0')} น. ${String(_pmNow.getDate()).padStart(2,'0')}/${String(_pmNow.getMonth()+1).padStart(2,'0')}/${_pmNow.getFullYear()}`);
     rebuildMaps();
-    toast(`Product Master (${currentBranch}): ${state.productMasterData.length} รายการ · พบราคา ${priced}`+(sk?` (ข้าม ${sk})`:''),'success');
+    // A/B/C ต้องโชว์เสมอ — เป็น 0 คือสัญญาณว่าไฟล์ไม่มี Col D แล้วระบบจะ fallback ไปกติกา G≠0 เงียบๆ
+    toast(`Product Master (${currentBranch}): ${state.productMasterData.length} รายการ · A/B/C ${abc} · พบราคา ${priced}`+(sk?` (ข้าม ${sk})`:''),abc?'success':'warn');
     saveSession(); syncProductMasterToFirestore();
   });
 }
@@ -3288,6 +3299,7 @@ async function _applyR01BaselineUpdate(baselineAt){
     }catch(e){console.warn('[R01 baseline]',e.message);}
   }
   if(state.r05Data.length&&(state.productMasterData.length||state.r01Data.length))rebuildMaps();
+  else {_rebuildCountableSkus();updateStats();}   // R01 ใหม่เปลี่ยนตัวหารได้แม้ R05 ยังไม่มา
   // flow ใหม่ (July 2026): ไม่ล้าง audit — ล้าง R16 เมื่อวานตาม baseline ใหม่แทน (cross-device propagation หลักของการล้าง R16)
   // ไม่เรียก saveSession/syncR16MetaToFirestore ที่นี่ — listener handler ห้าม saveSession (กัน sync loop), meta เครื่องอัพ R01 เขียนแล้ว
   _clearR16ForNewBaseline();
@@ -3705,7 +3717,9 @@ function loadSession() {
     if(s.r16_103Map){state.r16_103Map.clear();for(const k in s.r16_103Map)state.r16_103Map.set(k,s.r16_103Map[k]);}
     if(s.countResetAt)_countResetAt=s.countResetAt;
     if(s.r01BaselineAt)_r01BaselineAt=s.r01BaselineAt;
+    // R05 ยังไม่มา = สร้าง catalog ไม่ได้ แต่ตัวหาร Progress (PBM ∩ R01) คำนวณได้แล้ว — ห้ามปล่อยให้ค้างเลขเก่า
     if(state.r05Data.length&&(state.productMasterData.length||state.r01Data.length))rebuildMaps();
+    else {_rebuildCountableSkus();updateStats();}
     if(s.scanData){state.scanData.clear();for(const k in s.scanData)state.scanData.set(k,{scannedBy:'',auditor:'',retries:0,scans:[],...s.scanData[k]});}
     if(s.unknownScans)state.unknownScans=s.unknownScans;
     if(s.scanListMap){scanListMap.clear();for(const k in s.scanListMap)scanListMap.set(k,s.scanListMap[k]);}
@@ -3865,32 +3879,50 @@ window.addEventListener('DOMContentLoaded',async()=>{
 
 let _cachedActiveSkus=[];
 let _cachedTotalSku=0;
-// SKU ที่ "ต้องนับ" = SKU ใน R01.102 ที่ systemQty ≠ 0 (ส.ค. 2026)
+// SKU ที่ "ต้องนับ" (ส.ค. 2026):
+//   มีแถวใน R01.102  และ  หมวด Col P ไม่ใช่ 11./DELETE  และ ( G ≠ 0  หรือ  Col D ใน PBM ∈ {A,B,C} )
+//   - G ≠ 0        : ระบบบอกว่ามีของ → ต้องไปนับ (กติกาเดิม)
+//   - Col D A/B/C  : สินค้าขายดี → ต้องไปดูของบนชั้นจริง **แม้ระบบจะขึ้น 0** (เพิ่ม ส.ค. 2026)
+//   - หมวดใน R01 (ธง nc) ชนะทั้งสองข้อเสมอ
+// เงื่อนไข A/B/C มีแต่ "เพิ่ม" ไม่มีทางตัดออก → PBM ไฟล์เก่าที่ไม่มี field `cat` ให้ผลเท่ากติกาเดิมเป๊ะ
+// จึงไม่ต้องมี feature flag / fallback ใดๆ · ห้ามเปลี่ยน OR เป็น AND ไม่งั้นสาขาที่ยังไม่อัป PBM จะได้ Total SKU = 0
 // ตัวเศษกับตัวหารของ Progress ใช้ชุดนี้ชุดเดียว → ตัวเศษ ⊆ ตัวหารเสมอ เกิน 100% ไม่ได้
 // (เดิมตัวเศษวนจาก scanData แต่ตัวหารนับจาก r01Data คนละแหล่ง)
-// ⚠️ ต้องอ่านจาก state.r01Data (ค่าดิบ) ห้ามใช้ skuMap.systemQty — สาขายา clamp negSys เป็น 0 ไปแล้ว
-//    ถ้าใช้ skuMap จะแยก "G=0 จริง (ไม่ต้องนับ)" กับ "G ติดลบ (ต้องนับ = ขายของขาด)" ไม่ออก
-// PBM ไม่มีผลกับชุดนี้: SKU ที่ Col D=D/P ถูกกรองออกจาก PBM แต่ยังมีสต็อกใน R01 ต้องนับตามปกติ
+// ⚠️ อ่าน G จาก state.r01Data (ค่าดิบ) ห้ามใช้ skuMap.systemQty — สาขายา clamp negSys เป็น 0 ไปแล้ว
+//    ถ้าใช้ skuMap จะแยก "G=0 จริง" กับ "G ติดลบ (ขายของขาด)" ไม่ออก
 let _countableSkus=new Set();
+// PBM มีผลกับตัวหาร Progress แล้ว → ทุกจุดที่ PBM/R01 เปลี่ยนต้องเรียกอันนี้ แม้ R05 ยังมาไม่ถึง
+// (rebuildMaps() ทั้งก้อนเรียกไม่ได้ตอน R05 ยังไม่มา เพราะมันเคลียร์ skuMap/barcodeMap แล้ว early-return)
+function _rebuildCountableSkus(){
+  _countableSkus=new Set();
+  const nonCountSkus=new Set();const qtyMap=new Map();
+  // `nc` = หมวดใน R01 คอลัมน์ P ที่ไม่ใช่สินค้าคงคลัง (ติดธงตอน loadR01) — sticky: แถวไหนติดธง SKU นั้นไม่นับ
+  state.r01Data.forEach(r=>{qtyMap.set(r.colE,r.systemQty);if(r.nc)nonCountSkus.add(r.colE);});
+  // `cat` มีเฉพาะแถว A/B/C (loadProductMaster) — ไฟล์เก่าไม่มีเลย → set ว่าง → เงื่อนไขนี้ไม่ทำอะไร
+  const abcSkus=new Set();
+  state.productMasterData.forEach(r=>{if(r.cat)abcSkus.add(r.sku);});
+  qtyMap.forEach((q,sku)=>{
+    if(nonCountSkus.has(sku))return;                    // หมวดใน R01 ชนะ Col D เสมอ
+    if(q!==0||abcSkus.has(sku))_countableSkus.add(sku);
+  });
+  _cachedTotalSku=_countableSkus.size;
+}
 function rebuildMaps() {
   _cachedActiveSkus=[];
-  _cachedTotalSku=0;
-  _countableSkus=new Set();
   state.skuMap.clear();state.barcodeMap.clear();
   state.skuDirectMap = new Map();
-  const qtyMap=new Map();const r01NameMap=new Map();const nonCountSkus=new Set();
-  // `nc` = หมวดใน R01 คอลัมน์ P ที่ไม่ใช่สินค้าคงคลัง (ติดธงตอน loadR01) — sticky: แถวไหนติดธง SKU นั้นไม่นับ
-  state.r01Data.forEach(r=>{qtyMap.set(r.colE,r.systemQty);if(r.productName)r01NameMap.set(r.colE,r.productName);if(r.nc)nonCountSkus.add(r.colE);});
+  const qtyMap=new Map();const r01NameMap=new Map();
+  state.r01Data.forEach(r=>{qtyMap.set(r.colE,r.systemQty);if(r.productName)r01NameMap.set(r.colE,r.productName);});
   // คำนวณก่อน early-return ของ R05 — ไม่งั้นเครื่องที่ R05 ยังมาไม่ถึงจะโชว์ Total SKU = 0
-  qtyMap.forEach((q,sku)=>{if(q!==0&&!nonCountSkus.has(sku))_countableSkus.add(sku);});
-  _cachedTotalSku=_countableSkus.size;
+  _rebuildCountableSkus();
   if(!state.r05Data.length)return;
   const skuSource=state.productMasterData.length?state.productMasterData:state.r01Data.map(r=>({sku:r.colE,productName:r.productName}));
   // สาขายา: systemQty ติดลบ → มองเป็น 0 + flag negSys (Confirm แล้วเข้า stock_adjustment ตรง ไม่รอเภสัช verify) — WH เก็บค่าติดลบจริง
   const _clampNeg=_isPharmacyBranch();
   skuSource.forEach(r=>{if(!state.skuMap.has(r.sku)){const pn=r.productName||r01NameMap.get(r.sku)||r.sku;const q0=qtyMap.get(r.sku)??0;const neg=_clampNeg&&q0<0;state.skuMap.set(r.sku,{sku:r.sku,productName:pn,unitPrice:_parseProductMasterPrice(r.unitPrice),systemQty:neg?0:q0,negSys:neg,barcodes:[],isDel:false});}});
   // R01 items not in Product Branch Master → DEL (ถูกตัดออกจาก PBM แต่ยังมีสต็อกจริง)
-  // รวม SKU ที่ Col D=D/P ซึ่งถูกกรองออกตั้งแต่ตอน parse — ยังสแกน/Confirm/นับใน Progress ได้ตามปกติ
+  // รวม SKU ที่ Col D=D/P ซึ่งถูกกรองออกตั้งแต่ตอน parse — ยังสแกน/Confirm/เข้าใบปรับสต็อกได้ตามปกติ
+  // แต่ไม่อยู่ใน _countableSkus แล้ว (ไม่ใช่ A/B/C) จึงไม่ขึ้น Total SKU / Progress
   if(state.productMasterData.length&&state.r01Data.length){const pmSet=new Set(state.productMasterData.map(r=>r.sku));state.r01Data.forEach(r=>{if(!pmSet.has(r.colE)&&!state.skuMap.has(r.colE)){const neg=_clampNeg&&r.systemQty<0;state.skuMap.set(r.colE,{sku:r.colE,productName:r.productName||r.colE,unitPrice:null,systemQty:neg?0:r.systemQty,negSys:neg,barcodes:[],isDel:true});}});}
   state.r05Data.forEach(r=>{if(state.skuMap.has(r.colE)){state.skuMap.get(r.colE).barcodes.push({barcode:r.barcode,unitName:r.unitName,unitMultiplier:r.unitMultiplier,unitPrice:r.unitPrice});state.barcodeMap.set(r.barcode,r.colE);}});
   // กฎราคาย้ายมาที่ R05 Col B (ก.ค. 2026): ราคาผูกกับ "บาร์โค้ด" ไม่ใช่ SKU
@@ -5985,10 +6017,20 @@ async function syncProductMasterToFirestore(){
   if(!_db||!currentBranch||!state.productMasterData.length)return;
   const ref=getProductMasterMetaRef();
   if(!ref)return;
+  const json=JSON.stringify(state.productMasterData);
+  // {branch}_pm มีเพดาน 1 MiB เหมือน global_r05 ที่เคยชนแล้วเงียบ (ก.ค. 2026) — เตือนก่อนถึง
+  const kb=Math.round(new Blob([json]).size/1024);
+  if(kb>=800)toast(`⚠️ Product Master ${kb} KB ใกล้เพดาน Firestore 1 MB`,'warn',5000);
   try{
     // เขียนลง {branch}_pm ของ "สาขาที่เลือกอยู่ตอนนี้" เท่านั้น — อัปผิดสาขา = catalog สาขานั้นผิดทันทีผ่าน listener
-    await ref.set({branch:currentBranch,data_json:JSON.stringify(state.productMasterData),row_count:state.productMasterData.length,updated_at:firebase.firestore.FieldValue.serverTimestamp(),updated_at_text:state.productMasterUploadedAt||formatThaiDateTime(new Date())});
-  }catch(e){console.warn('Firestore product branch master sync:',e.message);}
+    // cat_coded = marker ว่าไฟล์นี้ผ่าน parser ที่เก็บ Col D แล้ว — **ไม่มีผลกับ logic** (ไม่มีโค้ดอ่าน)
+    // มีไว้ให้ตรวจบน Firebase Console ว่าสาขาไหนอัป PBM รุ่นใหม่แล้วบ้าง โดยไม่ต้องแกะ data_json
+    await ref.set({branch:currentBranch,data_json:json,row_count:state.productMasterData.length,cat_coded:true,updated_at:firebase.firestore.FieldValue.serverTimestamp(),updated_at_text:state.productMasterUploadedAt||formatThaiDateTime(new Date())});
+  }catch(e){
+    // ห้าม catch เงียบ — เคสนี้คือ bug pattern เดียวกับ global_r05 ที่เขียนไม่ผ่านแล้ว listener ดึงของเก่ามาทับ
+    console.warn('Firestore product branch master sync:',e.message);
+    toast(`อัปโหลด Product Master ขึ้น Cloud ไม่สำเร็จ (${kb} KB) — เครื่องอื่นจะยังเห็นไฟล์เดิม`,'error',6000);
+  }
 }
 
 // badge/วันที่ R16 อ่านจาก _r01 master doc เสมอ (เหมือน R01) — ไม่พึ่ง session doc ที่โดน syncToFirestore ทับด้วยค่าเครื่องอื่นได้
@@ -6054,7 +6096,8 @@ async function restoreMasterFromFirestore(force=false){
       state.productMasterData=[];state.productMasterMap.clear();
       document.getElementById('badgeProductMaster').textContent='ยังไม่โหลด';
       _setPmTs('');
-      if(state.r05Data.length)rebuildMaps();
+      // ไม่มี PBM → ไม่มีข้อมูล A/B/C → ตัวหารถอยไปกติกา G≠0 แต่ต้องคำนวณใหม่ ไม่ใช่ค้างเลขของสาขาก่อนหน้า
+      if(state.r05Data.length)rebuildMaps(); else {_rebuildCountableSkus();updateStats();}
     }
   }catch(e){console.warn('Firestore product branch master restore:',e.message);}
 }
@@ -6721,7 +6764,9 @@ async function restoreFromFirestore(force=false){
     if(!_isScanSchemaV2()&&s.scanListMap){for(const k in s.scanListMap)scanListMap.set(k,s.scanListMap[k]);}
     // full-replace โหลด cloud มาทั้งก้อน (รวม scanListMap) — ล้าง stale audit + ghost row ก่อน rebuild
     if(_isPharmacyBranch())scrubStaleLocalAudits();
+    // R05 ยังไม่มา = สร้าง catalog ไม่ได้ แต่ตัวหาร Progress (PBM ∩ R01) คำนวณได้แล้ว — ห้ามปล่อยให้ค้างเลขเก่า
     if(state.r05Data.length&&(state.productMasterData.length||state.r01Data.length))rebuildMaps();
+    else {_rebuildCountableSkus();updateStats();}
     rebuildScanListMap();
     saveSession();renderScanList();updateStats();renderTable();invalidatePopupRowsCache();updateConfirmBtn();
     document.getElementById('dbStatus').textContent='Synced ☁️';
