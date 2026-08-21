@@ -143,6 +143,39 @@ test('_countableSkus — PBM ไม่มี Col D → ได้ผลเท่�
   await closeApp(app);
 });
 
+// ปุ่ม 🗑️ DEL ในรายการสต็อกสินค้าเป็น "งานที่ต้องเดินไปหา" ไม่ใช่รายงานสินค้านอกแคตตาล็อกทั้งหมด
+// จึงต้องกรองด้วย _countableSkus ด้วย · แท็ก DEL แดงในตารางยังขึ้นครบทุกตัวเหมือนเดิม
+test('filter DEL — โชว์เฉพาะ DEL ที่อยู่ในชุดที่ต้องนับ', async ({ browser }) => {
+  const app = await bootBare(browser);
+  await app.page.evaluate(() => { currentBranch = 'SRC'; });
+
+  const r01 = [
+    { colE: 'D-STOCK', productName: 'DEL ที่ยังมีของ', systemQty: 4 },
+    { colE: 'D-EMPTY', productName: 'DEL ที่ของหมดแล้ว', systemQty: 0 },
+    { colE: 'D-NONCOUNT', productName: 'DEL หมวด 11.', systemQty: 4, nc: 1 },
+    { colE: 'IN-PM', productName: 'อยู่ใน PBM ปกติ', systemQty: 4 },
+  ];
+  // มีแค่ IN-PM ใน PBM → อีก 3 ตัวเป็น DEL
+  const pm = [{ sku: 'IN-PM', productName: 'อยู่ใน PBM ปกติ', unitPrice: 10, cat: 'A' }];
+
+  await countableFrom(app.page, { r01, pm });
+
+  const out = await app.page.evaluate(() => {
+    invalidatePopupRowsCache();
+    popupFilterState = 'del';
+    const del = getFilteredPopupRows().map((r) => r.sku).sort();
+    popupFilterState = 'all';
+    invalidatePopupRowsCache();
+    const allDelTags = buildPopupBaseRows().filter((r) => r.isDel).map((r) => r.sku).sort();
+    return { del, allDelTags };
+  });
+
+  expect(out.del).toEqual(['D-STOCK']);                              // เหลือตัวที่ต้องไปนับจริง
+  expect(out.allDelTags).toEqual(['D-EMPTY', 'D-NONCOUNT', 'D-STOCK']); // แท็กแดงยังครบทั้ง 3
+
+  await closeApp(app);
+});
+
 test('_countableSkus — ไม่มี R01 = 0 (ไม่ fallback ไปขนาด catalog)', async ({ browser }) => {
   const app = await bootBare(browser);
   await app.page.evaluate(() => { currentBranch = 'SRC'; });
