@@ -11,6 +11,9 @@ const F = require('../../lib/fixtures');
 
 const stats = (page) => page.evaluate(() => ({
   total: document.getElementById('statTotal').textContent,
+  counted: document.getElementById('statCounted').textContent,
+  pass: document.getElementById('statPass').textContent,
+  audit: document.getElementById('statFail').textContent,
   progress: document.getElementById('progressCount').textContent,
   pct: document.getElementById('statPct').textContent,
   countable: _countableSkus.size,
@@ -92,7 +95,12 @@ test.describe('stats cards + progress', () => {
     expect(denom).toBe(F.COUNTABLE_COUNT);
     expect(num).toBeLessThanOrEqual(denom);
     expect(num).toBe(F.COUNTABLE_COUNT);   // ทุกตัวที่ต้องนับถูกยืนยันแล้ว
-    expect(s.pct).toBe('100%');            // ไม่ใช่ 104% แม้ G=0 จะถูก confirm ไปด้วย
+    expect(s.pct).toBe('100%');            // ไม่ใช่ 104% แม้ตัวนอกชุดจะถูก confirm ไปด้วย
+
+    // เคสที่ส่วนเกินมากที่สุด (ยืนยันทุก SKU ในแคตตาล็อก) — การ์ด Counted/Pass ต้องไม่ทะลุ Total SKU
+    expect(Number(s.counted)).toBe(num);                 // Counted = ตัวเศษ Progress เป๊ะ
+    expect(Number(s.counted)).toBe(F.COUNTABLE_COUNT);
+    expect(Number(s.pass)).toBeLessThanOrEqual(Number(s.counted));
 
     await closeApp(app);
   });

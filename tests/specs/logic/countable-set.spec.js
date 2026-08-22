@@ -216,6 +216,53 @@ test('filter เหลือ — จำนวนแถว = ตัวหาร �
   await closeApp(app);
 });
 
+// การ์ด Counted/Pass = "ความคืบหน้าของงานนับ" ต้องมาจาก _countableSkus ชุดเดียวกับ Progress
+// ส่วน Audit = "งานค้างที่ต้องเคลียร์" ต้องนับทุกตัวและตรงกับ badge ปุ่ม Audit Verify (ห้ามกรอง)
+test('การ์ดสถิติ — Counted/Pass กรองตาม Progress · Audit นับครบไม่กรอง', async ({ browser }) => {
+  const app = await bootBare(browser);
+  await app.page.evaluate(() => { currentBranch = 'SRC'; });
+
+  const r01 = [
+    { colE: 'IN-PASS', productName: 'ในชุดนับ + pass', systemQty: 4 },
+    { colE: 'IN-AUDIT', productName: 'ในชุดนับ + audit', systemQty: 4 },
+    { colE: 'IN-TODO', productName: 'ในชุดนับ + ยังไม่สแกน', systemQty: 4 },
+    { colE: 'OUT-PASS', productName: 'นอกชุดนับ + pass (หมวด 11.)', systemQty: 4, nc: 1 },
+    { colE: 'OUT-AUDIT', productName: 'นอกชุดนับ + audit (หมวด 11.)', systemQty: 4, nc: 1 },
+  ];
+  const pm = r01.map((r) => ({ sku: r.colE, productName: r.productName, unitPrice: 10 }));
+
+  await countableFrom(app.page, { r01, pm });
+
+  const out = await app.page.evaluate(() => {
+    const set = (sku, status) => Object.assign(state.scanData.get(sku), { status, countedQty: 4 });
+    set('IN-PASS', 'pass');
+    set('IN-AUDIT', 'audit');
+    set('OUT-PASS', 'pass');
+    set('OUT-AUDIT', 'audit');
+    updateStats();
+    const txt = (id) => document.getElementById(id).textContent;
+    const [num, denom] = txt('progressCount').split(' / ').map(Number);
+    return {
+      counted: Number(txt('statCounted')),
+      pass: Number(txt('statPass')),
+      audit: Number(txt('statFail')),
+      auditBtn: Number(txt('auditVerifyCount')),
+      num, denom,
+    };
+  });
+
+  expect(out.denom).toBe(3);                 // IN-* สามตัว (OUT-* หมวด 11. ไม่เข้าชุดนับ)
+  expect(out.counted).toBe(out.num);         // ← invariant หลักที่เทสนี้มีไว้ล็อก
+  expect(out.counted).toBe(2);               // IN-PASS + IN-AUDIT (IN-TODO ยังไม่สแกน)
+  expect(out.pass).toBe(1);                  // เฉพาะ IN-PASS — OUT-PASS หลุดไปตามที่ตกลง
+  expect(out.audit).toBe(2);                 // IN-AUDIT + OUT-AUDIT — ไม่กรอง
+  expect(out.audit).toBe(out.auditBtn);      // การ์ดต้องตรงกับ badge ปุ่ม Audit Verify เสมอ
+  expect(out.counted).toBeLessThanOrEqual(out.denom);
+  expect(out.pass).toBeLessThanOrEqual(out.counted);
+
+  await closeApp(app);
+});
+
 test('_countableSkus — ไม่มี R01 = 0 (ไม่ fallback ไปขนาด catalog)', async ({ browser }) => {
   const app = await bootBare(browser);
   await app.page.evaluate(() => { currentBranch = 'SRC'; });

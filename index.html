@@ -5640,22 +5640,29 @@ function getPillClass(s){const m={scanning:'pill-pending',pass:'pill-pass',audit
 function updateStats(){
   const active=_cachedActiveSkus.length?_cachedActiveSkus:getActiveSkus();
   const statsSource=active.length?active:[...state.scanData.keys()];
-  let c=0,p=0,f=0,cCountable=0,auditGot=0,auditTotal=0;
+  let c=0,p=0,f=0,auditGot=0,auditTotal=0;
   for(const sku of statsSource){
     const sd=state.scanData.get(sku);
     if(!sd||sd.status==='pending'||sd.status==='scanning')continue;
-    c++;
-    if(sd.status==='pass'||sd.status==='audit_check'||sd.status==='stock_adjustment')p++;
-    else if(sd.status==='audit')f++;
+    // ── Audit + sub-progress = "งานค้างที่ต้องเคลียร์" → นับทุกตัว ห้ามกรองด้วย _countableSkus ──
+    // ของนอกรายการนับที่พนักงานยิงเจอบนชั้นส่วนใหญ่ลงเอยเป็น audit และเภสัชยังต้องไปตรวจของจริง
+    // ถ้ากรองออก การ์ดจะน้อยกว่า badge ปุ่ม Audit Verify (updateAuditVerifyCount ไม่กรอง) = ซ่อนงานที่ยังไม่เสร็จ
+    if(sd.status==='audit')f++;
     if(sd.status==='audit'||sd.status==='audit_check'||sd.status==='stock_adjustment'||(sd.auditor&&sd.status==='pass')){auditTotal++;}
     if(sd.status==='audit_check'||sd.status==='stock_adjustment'||(sd.auditor&&sd.status==='pass')){auditGot++;}
-    if(_countableSkus.has(sku))cCountable++;
+    // ── Counted/Pass = "ความคืบหน้าของงานนับ" → ต้องตรงกับ Progress จึงใช้ _countableSkus ชุดเดียวกัน ──
+    // ⚠️ บรรทัดนี้ต้องอยู่ "ใต้" การนับ audit เสมอ ไม่งั้น Audit จะโดนกรองไปด้วย
+    if(!_countableSkus.has(sku))continue;
+    c++;
+    if(sd.status==='pass'||sd.status==='audit_check'||sd.status==='stock_adjustment')p++;
   }
-  // Total SKU = ตัวหาร Progress ตัวเดียวกัน (SKU ใน R01 ที่ systemQty ≠ 0) — ไม่มี fallback ไปขนาด catalog
-  // ยังไม่ได้อัป R01 ต้องได้ 0 จริงๆ ไม่ใช่เลขหลอกจาก Product Master
+  // Total SKU · Counted · Pass · ตัวเศษ Progress มาจากชุด _countableSkus ชุดเดียวกันทั้งหมด (ส.ค. 2026)
+  // → Counted ≤ Total SKU เสมอ · Pass ≤ Counted เสมอ (เดิม Counted วนทุก SKU จึงทะลุ Total SKU ได้)
+  // ส่วน Audit อยู่คนละแกนโดยเจตนา → Pass + Audit ไม่เท่ากับ Counted และไม่ควรพยายามทำให้เท่า
+  // ไม่มี fallback: ยังไม่ได้อัป R01 ต้องได้ 0 จริงๆ ไม่ใช่เลขหลอกจาก Product Master
   const total=_cachedTotalSku;
   const u=state.unknownScans.length;
-  const progNum=cCountable,progDenom=_cachedTotalSku;
+  const progNum=c,progDenom=_cachedTotalSku;
   const pct=progDenom?Math.round(progNum/progDenom*100):0;
   document.getElementById('statTotal').textContent=total;document.getElementById('statCounted').textContent=c;document.getElementById('statPass').textContent=p;document.getElementById('statFail').textContent=f;document.getElementById('statUnknown').textContent=u;document.getElementById('statPct').textContent=pct+'%';document.getElementById('progressFill').style.width=pct+'%';document.getElementById('progressCount').textContent=progNum+' / '+progDenom;const scEl=document.getElementById('stockCount');if(scEl)scEl.textContent=active.length;const auditSub=document.getElementById('statAuditSub');if(auditSub){if(auditTotal>0){auditSub.style.display='block';auditSub.textContent=auditGot+' / '+auditTotal;}else{auditSub.style.display='none';}}
   const _apct=auditTotal?Math.round(auditGot/auditTotal*100):0;
@@ -5672,6 +5679,8 @@ function updateStats(){
   updatePharmacistAuditConfirmBtn();
   // WH: เปลี่ยน Counted → "Recheck ทั้งหมด" (auditTotal) · Total SKU แสดงบน Desktop แต่ซ่อนบน WH PDA
   // (WH PDA จอเล็กเรียง 2 คอลัมน์ — เพิ่ม Total เข้าไปจะเหลือการ์ดโดดแถวล่าง)
+  // ⚠️ WH เขียนทับค่า c ด้วย auditTotal โดยเจตนา — การ์ดใบนี้ของ WH คนละความหมายกับ Counted ของสาขายา
+  //    ห้าม "แก้ให้ตรงกับ Progress" เหมือนสาขายา และ auditTotal ต้องไม่ถูกกรองด้วย _countableSkus
   const _c1=document.getElementById('statCardTotal');
   const _cl=document.getElementById('statCountedLabel');
   const _c3=document.getElementById('statCounted').closest('.stat-card');

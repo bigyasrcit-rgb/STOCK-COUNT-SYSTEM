@@ -142,6 +142,18 @@ state = {
 - ⚠️ **เก็บแค่ธง `nc` ห้ามเก็บข้อความหมวดลง `r01Data`** — `{branch}_r01` มีเพดาน 1 MiB · ข้อความไทย ~45 ตัวอักษร × 5,400 แถว ≈ 750 KB ชนเพดานทันที
 - SKU ที่หลุดจากชุดนี้ยังอยู่ครบ: สแกนได้ · Confirm ได้ผลถูกต้อง · เห็นในรายการสินค้า — ตัดออกเฉพาะจาก Total SKU/Progress
 - `_cachedTotalSku = _countableSkus.size` เป็นทั้ง **การ์ด Total SKU และตัวหาร Progress** · ตัวเศษคือ SKU ในชุดเดียวกันที่ Confirm แล้ว
+- **การ์ดบนแถบสถิติแบ่งเป็น 2 แกน อย่าพยายามทำให้บวกลงตัว** (ส.ค. 2026 · `updateStats()`)
+
+| การ์ด | กรองด้วย `_countableSkus` | เหตุผล |
+|---|---|---|
+| Total SKU · **Counted** · **Pass** · ตัวเศษ Progress | ✅ กรอง (ชุดเดียวกันหมด) | `Counted === progNum` เป๊ะ · `Counted ≤ Total SKU` · `Pass ≤ Counted` |
+| **Audit** + sub-progress (`auditGot/auditTotal`) | ❌ **ห้ามกรอง** | เป็นงานค้างที่เภสัชต้องไปตรวจจริง · ต้องเท่ากับ badge ปุ่ม Audit Verify (`updateAuditVerifyCount()` ไม่กรอง) — กรองแล้ว = ซ่อนงานที่ยังไม่เสร็จ |
+| Not in System | — | `unknownScans` อยู่นอก `skuMap` อยู่แล้ว |
+| **WH การ์ดที่ 2 "Recheck ทั้งหมด"** | ❌ ไม่แตะ | WH เขียนทับ `c` ด้วย `auditTotal` โดยเจตนา — **คนละความหมายกับ Counted ของสาขายา ห้ามแก้ให้ตรงกับ Progress** |
+
+  - ⚠️ ในลูปของ `updateStats()` บรรทัด `if(!_countableSkus.has(sku))continue;` **ต้องอยู่ใต้การนับ `f`/`auditTotal`/`auditGot` เสมอ** ไม่งั้น Audit โดนกรองไปด้วยเงียบๆ
+  - ผลที่ตั้งใจ: `Pass + Audit ≠ Counted` (Audit นับกว้างกว่า) · SKU นอกชุดที่ Confirm เป็น `pass` จะไม่โผล่บนแถบสถิติเลย (ยังดูได้ใน 📋 รายการสินค้า / Export / ใบปรับสต็อก)
+  - **Dashboard ข้ามสาขา (`buildDashboardData`) ไม่กรองโดยเจตนา** — ไม่มี `_countableSkus` ของสาขาอื่น ถ้าจะกรองต้องโหลด PBM+R01 ทุกสาขา = กิน read เปล่า · Dashboard ตอบคำถาม "Confirm ไปแล้วกี่รายการ" คนละคำถามกับ Progress ของสาขา
 - **ปุ่มกรองใน 📋 รายการสต็อคสินค้าต้องอิง `_countableSkus` ด้วย** (ส.ค. 2026) — `getFilteredPopupRows()`
   - ⏳ **"เหลือ"** (key `pending`) = `_countableSkus` ที่ status ยัง `pending`/`scanning` → **จำนวนแถว = ตัวหาร − ตัวเศษ** เสมอ · ห้ามตัด `scanning` ออก (จะเกิด "รายการหมดแต่ Progress ไม่ 100%") และห้ามถอด `_countableSkus` (รายการจะยาวกว่าที่เหลือจริง)
   - 🗑️ **DEL** = `isDel && _countableSkus.has(sku)` → เป็น "งานที่ต้องเดินไปหา" ไม่ใช่รายงานของนอกแคตตาล็อกทั้งหมด · **แท็ก DEL แดงในตารางยังขึ้นครบทุกตัว** (คนละเรื่องกัน)
