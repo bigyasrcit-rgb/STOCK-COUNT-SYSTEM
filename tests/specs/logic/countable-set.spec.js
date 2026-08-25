@@ -176,9 +176,9 @@ test('filter DEL — โชว์เฉพาะ DEL ที่อยู่ใน
   await closeApp(app);
 });
 
-// ปุ่ม ⏳ เหลือ ต้องเป็น "ส่วนที่ยังไม่เข้าตัวเศษ Progress" เป๊ะ — จำนวนแถว = ตัวหาร − ตัวเศษ
+// ปุ่ม ⏳ ยังไม่ได้นับ ต้องเป็น "ส่วนที่ยังไม่เข้าตัวเศษ Progress" เป๊ะ — จำนวนแถว = ตัวหาร − ตัวเศษ
 // ถ้าสองอันนี้หลุดจากกัน จะเกิดอาการ "สแกนจนรายการหมดแล้วแต่ Progress ไม่ถึง 100%"
-test('filter เหลือ — จำนวนแถว = ตัวหาร − ตัวเศษ ของ Progress เสมอ', async ({ browser }) => {
+test('filter ยังไม่ได้นับ — จำนวนแถว = ตัวหาร − ตัวเศษ ของ Progress เสมอ', async ({ browser }) => {
   const app = await bootBare(browser);
   await app.page.evaluate(() => { currentBranch = 'SRC'; });
 
