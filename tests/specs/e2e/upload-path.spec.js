@@ -19,7 +19,8 @@ test.describe('CSV upload path', () => {
       state.skuMap.clear(); state.barcodeMap.clear(); state.skuDirectMap.clear();
     });
 
-    // CSV carries every row (incl. Col D = D/P/REVIEW); state must end up with the post-filter set only
+    // CSV carries every row (incl. Col D = D/P, still dropped, and REVIEW, no longer dropped);
+    // state must end up with the post-filter set only
     await app.page.setInputFiles('#fileProductMaster', csv('pm.csv', F.toPmCsv()));
     await app.page.waitForFunction((n) => state.productMasterData.length === n, F.pmRows.length, { polling: 100 });
     expect(F.pmSourceRows.length).toBeGreaterThan(F.pmRows.length); // fixture really does exercise the filter
@@ -40,12 +41,15 @@ test.describe('CSV upload path', () => {
       catA: state.skuMap.get('S-CATA'),
       catP: state.skuMap.get('S-CATP'),
       catD: state.skuMap.get('S-CATD'),
+      review: state.skuMap.get('S-REVIEW'),
       reviewInPm: state.productMasterMap.has('S-REVIEW'),
       catOnA: state.productMasterData.find((r) => r.sku === 'S-CATA')?.cat,
+      catOnReview: state.productMasterData.find((r) => r.sku === 'S-REVIEW')?.cat,
       catOnBlank: state.productMasterData.find((r) => r.sku === 'S-NOCAT')?.cat,
       countableCount: _countableSkus.size,
       countableZero: _countableSkus.has('S-ZERO'),
       countableAbcZero: _countableSkus.has('S-ABC0'),
+      countableReviewZero: _countableSkus.has('S-REVIEW0'),
       countableNoCat: _countableSkus.has('S-NOCAT'),
       countableNoCatZero: _countableSkus.has('S-NOCAT0'),
       countablePmOnly: _countableSkus.has('S-PMONLY'),
@@ -74,17 +78,21 @@ test.describe('CSV upload path', () => {
     expect(parsed.catP.isDel).toBe(true);            // Col D = 'P' dropped from PBM → DEL
     expect(parsed.catD.isDel).toBe(true);            // Col D = 'D' dropped from PBM → DEL
     expect(parsed.catP.isP).toBeUndefined();         // the cat/isP concept is gone
-    expect(parsed.reviewInPm).toBe(false);           // Col D = 'REVIEW' still dropped
+    expect(parsed.reviewInPm).toBe(true);            // Col D = 'REVIEW' no longer dropped (ส.ค. 2026 round 2)
+    expect(parsed.review.isDel).toBe(false);         // full parity with A/B/C — not DEL
+    expect(parsed.review.productName).toBe('Test Review Row'); // name from PBM, not R01
     expect(parsed.barcodeToSku).toBe('S-MULTI');     // R05 col A → col E
     expect(parsed.multiplier).toBe(24);              // R05 col H
 
-    // Col D is kept as `cat`, but only for A/B/C — {branch}_pm shares the 1 MiB ceiling with global_r05
+    // Col D is kept as `cat`, for A/B/C/REVIEW — {branch}_pm shares the 1 MiB ceiling with global_r05
     expect(parsed.catOnA).toBe('A');
+    expect(parsed.catOnReview).toBe('REVIEW');
     expect(parsed.catOnBlank).toBeUndefined();
 
-    // Total SKU / Progress set (ส.ค. 2026): G ≠ 0 OR Col D ∈ A/B/C — the A/B/C clause only ever adds
+    // Total SKU / Progress set (ส.ค. 2026): G ≠ 0 OR Col D ∈ A/B/C/REVIEW — this clause only ever adds
     expect(parsed.countableCount).toBe(F.COUNTABLE_COUNT);
     expect(parsed.countableAbcZero).toBe(true);      // A/B/C ที่ระบบขึ้น 0 → ต้องเดินไปนับ (กติกาที่เพิ่มมา)
+    expect(parsed.countableReviewZero).toBe(true);   // REVIEW ที่ระบบขึ้น 0 → ได้สิทธิ์เดียวกับ A/B/C
     expect(parsed.countableZero).toBe(true);         // S-ZERO ก็จัดชั้น A → G=0 ไม่ตัดออกอีกแล้ว
     expect(parsed.countableNeg).toBe(true);          // G ติดลบ → นับตามเดิม
     expect(parsed.countableNoCat).toBe(true);        // Col D ว่างแต่มีสต็อก → ยังนับตามกติกาเดิม

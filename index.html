@@ -2926,30 +2926,32 @@ function parseFile(file, callback) {
 }
 
 // ─── PBM คอลัมน์ D = การจัดชั้นตามยอดขาย (ส.ค. 2026) ───
-// A = ขายดีมาก · B = ปานกลาง · C = ขายได้เรื่อยๆ → 3 ค่านี้คือ "สินค้าที่ต้องเดินไปนับ"
-// เทียบเป๊ะเท่านั้น: ค่าว่าง / N / E หรืออะไรก็ตามที่รอด filter D/P/REVIEW = ไม่ต้องนับ
+// A = ขายดีมาก · B = ปานกลาง · C = ขายได้เรื่อยๆ · REVIEW = รอตรวจสอบ → 4 ค่านี้คือ "สินค้าที่ต้องเดินไปนับ"
+// (ส.ค. 2026 รอบ 2: REVIEW เข้าร่วมกลุ่มเดียวกับ A/B/C เต็มรูปแบบ — ไม่ถูกกรองออกจาก PBM แล้ว
+//  ไม่ติดแท็ก DEL, ชื่อสินค้ามาจาก PBM ไม่ใช่ R01, และนับเข้า Progress แม้ G=0 เหมือน A/B/C ทุกประการ)
+// เทียบเป๊ะเท่านั้น: ค่าว่าง / N / E หรืออะไรก็ตามที่รอด filter D/P = ไม่ต้องนับ
 // ⚠️ ตัวหาร Progress ยึดชุดนี้แล้ว (ไม่ใช่ R01 G≠0 เหมือนก่อน ส.ค. 2026) — ดู _rebuildCountableSkus()
-const PM_COUNT_COL_D=['A','B','C'];
-function _isAbcColD(colD){return PM_COUNT_COL_D.includes((colD??'').toString().trim().toUpperCase());}
+const PM_COUNT_COL_D=['A','B','C','REVIEW'];
+function _isForceCountColD(colD){return PM_COUNT_COL_D.includes((colD??'').toString().trim().toUpperCase());}
 
 function loadProductMaster(event) {
   const file=event.target.files[0]; if(!file)return;
   parseFile(file,rows=>{
     state.productMasterData=[]; let sk=0,priced=0,abc=0;
-    // Col D filter (ส.ค. 2026): ข้าม D / P / REVIEW — เดิมข้ามเฉพาะ REVIEW แล้วติดแท็ก cat A/P
+    // Col D filter (ส.ค. 2026): ข้าม D / P เท่านั้น — REVIEW ไม่ถูกกรองแล้ว (รอบ 2) ให้ผลเหมือน A/B/C ทุกอย่าง
     // SKU ที่ถูกข้ามแต่ยังมีสต็อกใน R01 จะกลายเป็น DEL ใน rebuildMaps และหลุดจาก Progress ด้วย
-    // (ตัวหาร Progress = PBM Col D ∈ A/B/C ∩ R01 — ดู _rebuildCountableSkus)
-    // ⚠️ เก็บ `cat` เฉพาะแถว A/B/C เท่านั้น — {branch}_pm มีเพดาน 1 MiB เหมือน global_r05
+    // (ตัวหาร Progress = PBM Col D ∈ A/B/C/REVIEW ∩ R01 — ดู _rebuildCountableSkus)
+    // ⚠️ เก็บ `cat` เฉพาะแถว A/B/C/REVIEW เท่านั้น — {branch}_pm มีเพดาน 1 MiB เหมือน global_r05
     //    การเขียน cat:'' ให้ทุกแถวคือเพิ่ม byte ฟรีหลักหมื่นโดยไม่ได้ข้อมูลเพิ่ม
-    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const sku=(r[0]??'').toString().trim();const name=(r[1]??'').toString().trim();const colD=(r[3]??'').toString().trim().toUpperCase();if(!sku){sk++;continue;}if(colD==='D'||colD==='P'||colD==='REVIEW'){sk++;continue;}const unitPrice=_parseProductMasterPrice(r[9]);if(unitPrice!==null)priced++;const isAbc=_isAbcColD(colD);if(isAbc)abc++;state.productMasterData.push({sku,productName:name,unitPrice,...(isAbc?{cat:colD}:{})});}
+    for(let i=1;i<rows.length;i++){const r=rows[i];if(!r||!r.length)continue;const sku=(r[0]??'').toString().trim();const name=(r[1]??'').toString().trim();const colD=(r[3]??'').toString().trim().toUpperCase();if(!sku){sk++;continue;}if(colD==='D'||colD==='P'){sk++;continue;}const unitPrice=_parseProductMasterPrice(r[9]);if(unitPrice!==null)priced++;const isForceCount=_isForceCountColD(colD);if(isForceCount)abc++;state.productMasterData.push({sku,productName:name,unitPrice,...(isForceCount?{cat:colD}:{})});}
     state.productMasterMap.clear();
     state.productMasterData.forEach(r=>state.productMasterMap.set(r.sku,r.productName));
     document.getElementById('badgeProductMaster').textContent='Ready';
     document.getElementById('fileProductMaster').nextElementSibling.style.borderColor='var(--green)';
     const _pmNow=new Date();_setPmTs(`${String(_pmNow.getHours()).padStart(2,'0')}:${String(_pmNow.getMinutes()).padStart(2,'0')} น. ${String(_pmNow.getDate()).padStart(2,'0')}/${String(_pmNow.getMonth()+1).padStart(2,'0')}/${_pmNow.getFullYear()}`);
     rebuildMaps();
-    // A/B/C ต้องโชว์เสมอ — เป็น 0 คือสัญญาณว่าไฟล์ไม่มี Col D แล้วระบบจะ fallback ไปกติกา G≠0 เงียบๆ
-    toast(`Product Master (${currentBranch}): ${state.productMasterData.length} รายการ · A/B/C ${abc} · พบราคา ${priced}`+(sk?` (ข้าม ${sk})`:''),abc?'success':'warn');
+    // A/B/C/REVIEW ต้องโชว์เสมอ — เป็น 0 คือสัญญาณว่าไฟล์ไม่มี Col D แล้วระบบจะ fallback ไปกติกา G≠0 เงียบๆ
+    toast(`Product Master (${currentBranch}): ${state.productMasterData.length} รายการ · A/B/C/REVIEW ${abc} · พบราคา ${priced}`+(sk?` (ข้าม ${sk})`:''),abc?'success':'warn');
     saveSession(); syncProductMasterToFirestore();
   });
 }
@@ -3881,9 +3883,9 @@ window.addEventListener('DOMContentLoaded',async()=>{
 let _cachedActiveSkus=[];
 let _cachedTotalSku=0;
 // SKU ที่ "ต้องนับ" (ส.ค. 2026):
-//   มีแถวใน R01.102  และ  หมวด Col P ไม่ใช่ 11./DELETE  และ ( G ≠ 0  หรือ  Col D ใน PBM ∈ {A,B,C} )
-//   - G ≠ 0        : ระบบบอกว่ามีของ → ต้องไปนับ (กติกาเดิม)
-//   - Col D A/B/C  : สินค้าขายดี → ต้องไปดูของบนชั้นจริง **แม้ระบบจะขึ้น 0** (เพิ่ม ส.ค. 2026)
+//   มีแถวใน R01.102  และ  หมวด Col P ไม่ใช่ 11./DELETE  และ ( G ≠ 0  หรือ  Col D ใน PBM ∈ {A,B,C,REVIEW} )
+//   - G ≠ 0              : ระบบบอกว่ามีของ → ต้องไปนับ (กติกาเดิม)
+//   - Col D A/B/C/REVIEW : สินค้าขายดี/รอตรวจสอบ → ต้องไปดูของบนชั้นจริง **แม้ระบบจะขึ้น 0** (เพิ่ม ส.ค. 2026)
 //   - หมวดใน R01 (ธง nc) ชนะทั้งสองข้อเสมอ
 // เงื่อนไข A/B/C มีแต่ "เพิ่ม" ไม่มีทางตัดออก → PBM ไฟล์เก่าที่ไม่มี field `cat` ให้ผลเท่ากติกาเดิมเป๊ะ
 // จึงไม่ต้องมี feature flag / fallback ใดๆ · ห้ามเปลี่ยน OR เป็น AND ไม่งั้นสาขาที่ยังไม่อัป PBM จะได้ Total SKU = 0
@@ -3923,7 +3925,7 @@ function rebuildMaps() {
   skuSource.forEach(r=>{if(!state.skuMap.has(r.sku)){const pn=r.productName||r01NameMap.get(r.sku)||r.sku;const q0=qtyMap.get(r.sku)??0;const neg=_clampNeg&&q0<0;state.skuMap.set(r.sku,{sku:r.sku,productName:pn,unitPrice:_parseProductMasterPrice(r.unitPrice),systemQty:neg?0:q0,negSys:neg,barcodes:[],isDel:false});}});
   // R01 items not in Product Branch Master → DEL (ถูกตัดออกจาก PBM แต่ยังมีสต็อกจริง)
   // รวม SKU ที่ Col D=D/P ซึ่งถูกกรองออกตั้งแต่ตอน parse — ยังสแกน/Confirm/เข้าใบปรับสต็อกได้ตามปกติ
-  // แต่ไม่อยู่ใน _countableSkus แล้ว (ไม่ใช่ A/B/C) จึงไม่ขึ้น Total SKU / Progress
+  // (REVIEW ไม่อยู่ในกลุ่มนี้แล้ว — เข้า PBM catalog ตามปกติเหมือน A/B/C ไม่ติดแท็ก DEL)
   if(state.productMasterData.length&&state.r01Data.length){const pmSet=new Set(state.productMasterData.map(r=>r.sku));state.r01Data.forEach(r=>{if(!pmSet.has(r.colE)&&!state.skuMap.has(r.colE)){const neg=_clampNeg&&r.systemQty<0;state.skuMap.set(r.colE,{sku:r.colE,productName:r.productName||r.colE,unitPrice:null,systemQty:neg?0:r.systemQty,negSys:neg,barcodes:[],isDel:true});}});}
   state.r05Data.forEach(r=>{if(state.skuMap.has(r.colE)){state.skuMap.get(r.colE).barcodes.push({barcode:r.barcode,unitName:r.unitName,unitMultiplier:r.unitMultiplier,unitPrice:r.unitPrice});state.barcodeMap.set(r.barcode,r.colE);}});
   // กฎราคาย้ายมาที่ R05 Col B (ก.ค. 2026): ราคาผูกกับ "บาร์โค้ด" ไม่ใช่ SKU

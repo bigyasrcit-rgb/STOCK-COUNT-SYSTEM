@@ -9,19 +9,20 @@
 // they no longer drive the gate.
 //
 // Col D (colD) drives two separate things:
-//   1) filter — the parser drops rows whose colD is D / P / REVIEW.
+//   1) filter — the parser drops rows whose colD is D / P (REVIEW is NOT dropped, ส.ค. 2026 round 2).
 //      pmSourceRows keeps every row (what toPmCsv emits); pmRows is the post-filter set the app should
 //      end up with — asserting one against the other is what proves the filter runs.
-//   2) countable set (ส.ค. 2026) — only colD A / B / C is "ต้องเดินไปนับ", and the parser keeps the
-//      letter as `cat` on surviving rows. R01 col G is no longer part of that decision.
+//   2) countable set (ส.ค. 2026) — colD A / B / C / REVIEW is "ต้องเดินไปนับ", and the parser keeps the
+//      value as `cat` on surviving rows. R01 col G is no longer part of that decision for these four.
+//      REVIEW is full parity with A/B/C: stays in the catalog, gets its PBM name, never tagged DEL.
 
 const pmSourceRows = [];
 const pmRows = [];
 const r01Rows = [];
 const r05Rows = [];
-const PM_SKIPPED_COL_D = ['D', 'P', 'REVIEW'];
-const PM_COUNT_COL_D = ['A', 'B', 'C'];
-const isAbcColD = (colD) => PM_COUNT_COL_D.includes(String(colD ?? '').trim().toUpperCase());
+const PM_SKIPPED_COL_D = ['D', 'P'];
+const PM_COUNT_COL_D = ['A', 'B', 'C', 'REVIEW'];
+const isForceCountColD = (colD) => PM_COUNT_COL_D.includes(String(colD ?? '').trim().toUpperCase());
 
 // R01 col P (index 15) = product category. Categories that are not stock-on-hand ("11. …" office
 // supplies / expenses / freight, and anything marked DELETE) stay fully usable but drop out of the
@@ -36,7 +37,7 @@ function add({ sku, name, price = 10, colD = 'A', colP = '', sys = 1, barcodes =
   if (inPm) {
     pmSourceRows.push({ sku, productName: name, unitPrice: price, colD });
     if (!PM_SKIPPED_COL_D.includes(colD)) {
-      pmRows.push({ sku, productName: name, unitPrice: price, ...(isAbcColD(colD) ? { cat: colD } : {}) });
+      pmRows.push({ sku, productName: name, unitPrice: price, ...(isForceCountColD(colD) ? { cat: colD } : {}) });
     }
   }
   if (inR01) r01Rows.push({ colE: sku, productName: name, systemQty: sys, colP });
@@ -52,15 +53,18 @@ add({ sku: 'S-NOPRICE',name: 'Test No Price Item',   price: 50,   sys: 8,  barco
 add({ sku: 'S-ZERO',   name: 'Test Zero Stock Med',  price: 20,   sys: 0,  barcodes: [['B-ZERO', 'TAB', 1, 20]] });
 add({ sku: 'S-NEG',    name: 'Test Negative Stock',  price: 20,   sys: -3, barcodes: [['B-NEG', 'TAB', 1, 20]] });
 add({ sku: 'S-MULTI',  name: 'Test Multi Pack',      price: 100,  sys: 60, barcodes: [['B-M1', 'TAB', 1, 100], ['B-M6', 'STRIP', 6, 600], ['B-M24', 'BOX', 24, 2400]] });
-// Col D variants — A/B/C stay in the catalog and pull their SKU into the count even at zero stock.
-// D/P/REVIEW are dropped from PBM but still have stock in R01, so they stay scannable (as DEL) AND
-// still count — the A/B/C clause adds, it never subtracts.
+// Col D variants — A/B/C/REVIEW stay in the catalog and pull their SKU into the count even at zero
+// stock. D/P are dropped from PBM but still have stock in R01, so they stay scannable (as DEL) AND
+// still count — the force-count clause adds, it never subtracts.
 add({ sku: 'S-CATA',   name: 'Test Controlled A',    price: 30, colD: 'A', sys: 4, barcodes: [['B-CATA', 'TAB', 1, 30]] });
 add({ sku: 'S-CATP',   name: 'Test Psychotropic P',  price: 30, colD: 'P', sys: 4, barcodes: [['B-CATP', 'TAB', 1, 30]] });
 add({ sku: 'S-CATD',   name: 'Test Discontinued D',  price: 30, colD: 'D', sys: 4, barcodes: [['B-CATD', 'TAB', 1, 30]] });
+// REVIEW is full parity with A/B/C (ส.ค. 2026 round 2) — stays in PBM, not DEL, name from PBM
 add({ sku: 'S-REVIEW', name: 'Test Review Row',      price: 30, colD: 'REVIEW', sys: 4, barcodes: [['B-REVIEW', 'TAB', 1, 30]] });
 // The whole point of the ส.ค. 2026 rule: a fast-moving item the system thinks is empty still gets counted
 add({ sku: 'S-ABC0',   name: 'Test Fast Mover Empty',price: 30, colD: 'B', sys: 0, barcodes: [['B-ABC0', 'TAB', 1, 30]] });
+// REVIEW gets the exact same zero-stock treatment as A/B/C
+add({ sku: 'S-REVIEW0',name: 'Test Review Empty',    price: 30, colD: 'REVIEW', sys: 0, barcodes: [['B-REVIEW0', 'TAB', 1, 30]] });
 // Unclassified (blank Col D) — counted only through the stock clause, so it splits on systemQty:
 // stock → counted; zero → the one shape that drops out of the count entirely
 add({ sku: 'S-NOCAT',  name: 'Test Unclassified',    price: 30, colD: '',  sys: 5, barcodes: [['B-NOCAT', 'TAB', 1, 30]] });
@@ -83,7 +87,7 @@ for (let i = 1; i <= 9; i++) {
 function esc(v) { v = String(v ?? ''); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 const joinRows = (rows) => rows.map((r) => r.map(esc).join(',')).join('\r\n');
 
-// PBM: col0=sku, col1=name, col3=colD (D/P/REVIEW get dropped by the parser), col9=price
+// PBM: col0=sku, col1=name, col3=colD (D/P get dropped by the parser), col9=price
 // Emits pmSourceRows on purpose — the app must do the filtering, not the fixture.
 function toPmCsv() {
   const rows = [['SKU', 'NAME', 'C2', 'GROUP', 'C4', 'C5', 'C6', 'C7', 'C8', 'PRICE']];
@@ -116,11 +120,11 @@ const r01CloudRows = r01Rows.map(({ colE, productName, systemQty, colP }) => ({
 }));
 
 // "SKU ที่ต้องนับ" (ส.ค. 2026) = has an R01 row AND a countable col-P category
-//                                AND ( systemQty !== 0  OR  classified A/B/C in the PBM ).
+//                                AND ( systemQty !== 0  OR  classified A/B/C/REVIEW in the PBM ).
 // The single set behind both Total SKU and the Progress numerator/denominator.
-// The A/B/C clause only ever ADDS: a fast mover the system reports as 0 still has to be checked on
-// the shelf. Because it can never subtract, a PBM with no `cat` at all degrades to exactly the
-// legacy rule — which is what every branch runs until its file is re-uploaded.
+// The force-count clause only ever ADDS: a fast mover (or unreviewed item) the system reports as 0
+// still has to be checked on the shelf. Because it can never subtract, a PBM with no `cat` at all
+// degrades to exactly the legacy rule — which is what every branch runs until its file is re-uploaded.
 const ABC_SKUS = new Set(pmRows.filter((r) => r.cat).map((r) => r.sku));
 const COUNTABLE_SKUS = new Set(
   r01Rows

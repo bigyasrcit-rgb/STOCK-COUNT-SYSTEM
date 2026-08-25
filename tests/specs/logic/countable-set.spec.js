@@ -1,13 +1,15 @@
 // "SKU ที่ต้องนับ" (_countableSkus) = มีแถวใน R01.102 · หมวด Col P ไม่ใช่ 11./DELETE
-//                                     และ ( G ≠ 0  หรือ  Col D ใน PBM ∈ {A,B,C} )
+//                                     และ ( G ≠ 0  หรือ  Col D ใน PBM ∈ {A,B,C,REVIEW} )
 // ตัวเดียวที่อยู่เบื้องหลังทั้งการ์ด Total SKU และตัวเศษ/ตัวหารของ Progress
 //
 // กับดักที่เทสนี้ล็อกไว้:
-//  1) A/B/C ที่ระบบขึ้นสต็อก 0 ต้อง "นับ" — คือทั้งหมดของกติกาที่เพิ่มมา ส.ค. 2026
-//  2) เงื่อนไข A/B/C มีแต่เพิ่ม ไม่มีทางตัดออก → PBM ไฟล์เก่าที่ไม่มี `cat` ต้องได้ผลเท่ากติกาเดิมเป๊ะ
+//  1) A/B/C/REVIEW ที่ระบบขึ้นสต็อก 0 ต้อง "นับ" — คือทั้งหมดของกติกาที่เพิ่มมา ส.ค. 2026
+//  2) เงื่อนไขกลุ่มนี้มีแต่เพิ่ม ไม่มีทางตัดออก → PBM ไฟล์เก่าที่ไม่มี `cat` ต้องได้ผลเท่ากติกาเดิมเป๊ะ
 //     (ถ้าใครเผลอเปลี่ยน OR เป็น AND ทุกสาขาที่ยังไม่อัป PBM จะได้ Total SKU = 0 ทันที)
 //  3) หมวดใน R01 (ธง nc) ชนะทั้งสองข้อเสมอ
 //  4) ต้องอ่าน G จาก state.r01Data (ค่าดิบ) ไม่ใช่ skuMap.systemQty ที่ clamp negSys เป็น 0 แล้ว
+//  5) REVIEW ได้สิทธิ์เต็มรูปแบบเหมือน A/B/C (ส.ค. 2026 รอบ 2) — ไม่ถูกกรองออกจาก PBM, ไม่ติด DEL,
+//     ชื่อสินค้ามาจาก PBM ไม่ใช่ R01 — ต่างจาก D/P ที่ยังถูกกรองทิ้งเหมือนเดิม
 const { test, expect, bootBare, closeApp } = require('../../lib/hooks');
 
 // สร้างชุดข้อมูลสังเคราะห์ตรงเข้า state แล้วเรียก rebuildMaps() ของจริง (ไม่แตะไฟล์ production)
@@ -24,19 +26,19 @@ async function countableFrom(page, { r01, pm }) {
   }, { r01, pm });
 }
 
-test('_isAbcColD — เทียบเป๊ะเฉพาะ A/B/C', async ({ browser }) => {
+test('_isForceCountColD — เทียบเป๊ะเฉพาะ A/B/C/REVIEW', async ({ browser }) => {
   const app = await bootBare(browser);
   const out = await app.page.evaluate(() => [
-    _isAbcColD('A'), _isAbcColD('B'), _isAbcColD('C'),
-    _isAbcColD(' a '),        // trim + uppercase
-    _isAbcColD('D'), _isAbcColD('P'), _isAbcColD('REVIEW'),
-    _isAbcColD('N'), _isAbcColD('E'),   // ค่าอื่นที่รอด filter → ไม่นับ
-    _isAbcColD('AB'), _isAbcColD('A1'),
-    _isAbcColD(''), _isAbcColD(null), _isAbcColD(undefined),
+    _isForceCountColD('A'), _isForceCountColD('B'), _isForceCountColD('C'), _isForceCountColD('REVIEW'),
+    _isForceCountColD(' review '),        // trim + uppercase
+    _isForceCountColD('D'), _isForceCountColD('P'),   // ยังถูกกรองออกจาก PBM เหมือนเดิม
+    _isForceCountColD('N'), _isForceCountColD('E'),   // ค่าอื่นที่รอด filter → ไม่นับ
+    _isForceCountColD('AB'), _isForceCountColD('A1'),
+    _isForceCountColD(''), _isForceCountColD(null), _isForceCountColD(undefined),
   ]);
   expect(out).toEqual([
-    true, true, true, true,
-    false, false, false,
+    true, true, true, true, true,
+    false, false,
     false, false,
     false, false,
     false, false, false,
@@ -94,6 +96,36 @@ test('_countableSkus — ตาราง P1–P8: นับเมื่อ G ≠
   const neg = await app.page.evaluate(() => state.skuMap.get('P9-ABC-NEG'));
   expect(neg.systemQty).toBe(0);
   expect(neg.negSys).toBeTruthy();
+
+  await closeApp(app);
+});
+
+// REVIEW ได้สิทธิ์เต็มรูปแบบเหมือน A/B/C (ส.ค. 2026 รอบ 2) — ไม่ใช่แค่ "นับได้แม้ G=0" แต่ทั้งชุด:
+// อยู่ใน PBM catalog ตามปกติ, ไม่ติดแท็ก DEL, ชื่อสินค้ามาจาก PBM ไม่ใช่ R01
+test('_countableSkus — Col D REVIEW ได้สิทธิ์เต็มรูปแบบเหมือน A/B/C', async ({ browser }) => {
+  const app = await bootBare(browser);
+  await app.page.evaluate(() => { currentBranch = 'SRC'; });
+
+  const r01 = [
+    { colE: 'REV-ZERO', productName: 'ชื่อจาก R01 (ไม่ควรถูกใช้)', systemQty: 0 },
+    { colE: 'REV-STOCK', productName: 'ชื่อจาก R01 (ไม่ควรถูกใช้)', systemQty: 5 },
+  ];
+  const pm = [
+    { sku: 'REV-ZERO', productName: 'ชื่อจาก PBM', unitPrice: 10, cat: 'REVIEW' },
+    { sku: 'REV-STOCK', productName: 'ชื่อจาก PBM', unitPrice: 10, cat: 'REVIEW' },
+  ];
+
+  const out = await countableFrom(app.page, { r01, pm });
+  expect(out.countable).toEqual(['REV-STOCK', 'REV-ZERO']);   // ทั้งคู่นับ แม้ตัวหนึ่ง G=0
+
+  const info = await app.page.evaluate(() => ({
+    isDel: state.skuMap.get('REV-ZERO')?.isDel,
+    productName: state.skuMap.get('REV-ZERO')?.productName,
+    inPmMap: state.productMasterMap.has('REV-ZERO'),
+  }));
+  expect(info.isDel).toBe(false);              // ไม่ติดแท็ก DEL — ต่างจาก D/P
+  expect(info.productName).toBe('ชื่อจาก PBM'); // ชื่อมาจาก PBM ไม่ใช่ R01
+  expect(info.inPmMap).toBe(true);              // อยู่ใน catalog จริง ไม่ถูกกรองทิ้ง
 
   await closeApp(app);
 });

@@ -99,7 +99,7 @@ effectiveQty = countedQty + soldQty + r16103Qty - inboundQty
 | `{branch}` | session หลักของ branch (schema v2 = metadata เท่านั้น) |
 | `{branch}/items/{sku}` | schema v2: 1 document ต่อ SKU ต่อรอบนับ (subcollection) |
 | `{branch}_r01` | R01 master/version และ R16 metadata ของสาขา |
-| `{branch}_pm` | Product Branch Master — catalog + การจัดชั้น Col D ต่อสาขา (ส.ค. 2026 แทน `global_pm`) · `cat_coded:true` = เก็บ `cat` แล้ว = ใช้กติกา A/B/C ได้ |
+| `{branch}_pm` | Product Branch Master — catalog + การจัดชั้น Col D ต่อสาขา (ส.ค. 2026 แทน `global_pm`) · `cat_coded:true` = เก็บ `cat` แล้ว = ใช้กติกา A/B/C/REVIEW ได้ |
 | `global_pm` | legacy read-only — ไม่มีโค้ดอ่าน/เขียนแล้ว เก็บไว้เพื่อ rollback ห้ามลบ |
 | `global_r05` | Barcode master R05 (ยัง global ใช้ร่วมทุกสาขา) |
 | `WH/confirm_ops/{opId}` | WH workflow v2 operation; authoritative เมื่อ `state==='committed'` เท่านั้น |
@@ -203,6 +203,7 @@ R01/R16 master
 | (ส.ค. 2026) | การ์ด Counted/Pass วนทุก SKU ใน `skuMap` แต่ Progress วนเฉพาะ `_countableSkus` → Counted ทะลุ Total SKU ได้ · ปุ่มกรอง ⏳/🗑️ ในรายการสินค้าก็ไม่ตรงกับ Progress เช่นกัน | **Total SKU · Counted · Pass · ตัวเศษ Progress · ปุ่ม ⏳ ยังไม่ได้นับ · ปุ่ม 🗑️ DEL ต้องใช้ `_countableSkus` ชุดเดียวกันหมด** · **`Audit` + sub-progress ห้ามกรอง** (ต้องเท่ากับ badge `updateAuditVerifyCount()` ไม่งั้นซ่อนงานเภสัช) → ยอมรับว่า `Pass + Audit ≠ Counted` · ใน `updateStats()` บรรทัด `if(!_countableSkus.has(sku))continue;` ต้องอยู่ **ใต้** การนับ audit เสมอ · **ห้ามแก้การ์ดที่ 2 ของ WH** (`auditTotal` = "Recheck ทั้งหมด" คนละความหมาย) · Dashboard ข้ามสาขาไม่กรองโดยเจตนา |
 | (ส.ค. 2026) | Product Master เป็นไฟล์กลางไฟล์เดียวทุกสาขา ทำให้ Total SKU เป็นเลขทั้งบริษัทและต้องมีการ์ด `SKU BRANCH` ซ้อน | PM เป็น `{branch}_pm` ต่อสาขา · **ห้ามใส่ fallback ไป `global_pm`** (สาขาที่ยังไม่อัปต้องเห็น "ยังไม่โหลด" ไม่ใช่ catalog สาขาอื่น) · `restoreMasterFromFirestore` ต้องล้าง PM เมื่อ doc ไม่มี · ห้ามลบ `global_pm` บน cloud (rollback) |
 | (ส.ค. 2026) | กติกา "นับเฉพาะ R01 ที่ G ≠ 0" ทำให้สินค้าขายดี (PBM Col D = A/B/C) ที่ระบบขึ้นสต็อก 0 หลุดจากงานนับ ทั้งที่ต้องเดินไปดูของบนชั้นจริงทุกครั้ง | `_countableSkus` = R01 · หมวด Col P นับได้ · **และ ( `G ≠ 0` หรือ PBM Col D ∈ {A,B,C} )** · ⚠️ **ต้องเป็น `หรือ` ห้ามเป็น `และ`** — เงื่อนไข A/B/C มีแต่เพิ่ม ทำให้ PBM ไฟล์เก่าที่ไม่มี `cat` ให้ผลเท่ากติกาเดิมเองโดยไม่ต้องมี feature flag · เปลี่ยนเป็น `และ` = ทุกสาขาที่ยังไม่อัป PBM ได้ Total SKU = 0 ทันที · หมวด R01 ชนะทั้งสองข้อเสมอ · เก็บ `cat` เฉพาะแถว A/B/C — `{branch}_pm` มีเพดาน 1 MiB เหมือน `global_r05` และ `syncProductMasterToFirestore` ต้อง toast error เมื่อเขียนไม่ผ่าน ห้าม catch เงียบ · PBM มีผลกับตัวหารแล้ว ทุกจุดที่ PBM/R01 เปลี่ยนต้องรีคำนวณ **แม้ R05 ยังมาไม่ถึง** |
+| (ส.ค. 2026 รอบ 2) | `Col D = REVIEW` ยังถูกกรองทิ้งจาก PBM เหมือน `D`/`P` ทำให้สินค้ารอตรวจสอบที่ระบบขึ้นสต็อก 0 หลุดจากงานนับเหมือนกัน ทั้งที่ควรได้สิทธิ์แบบเดียวกับ A/B/C | `REVIEW` เข้าร่วม `PM_COUNT_COL_D` เต็มรูปแบบ (`_isForceCountColD()`, เดิมชื่อ `_isAbcColD`) — **ไม่ใช่แค่กติกานับ**: ไม่ถูกกรองออกจาก PBM parser อีกต่อไป, ไม่ติดแท็ก DEL, ชื่อสินค้ามาจาก PBM ไม่ใช่ R01 · `D`/`P` ยังถูกกรองทิ้งเหมือนเดิม ไม่ได้ขยายตาม |
 
 สถานะปัจจุบันของการแก้ WH: โค้ดรุ่นใหม่ถูก commit/push แล้ว และเขียนผลยืนยันใหม่ผ่าน `WH/confirm_ops/{opId}/results/{sku}` เท่านั้น จึงไม่ควรชนเพดาน dynamic-map เดิมซ้ำในรอบถัดไป เมื่อแก้หรือ deploy ที่เกี่ยวข้อง ต้อง Publish `firestore.rules` ก่อน/พร้อม deploy เว็บ และบังคับให้ Supervisor กับ PDA ทุกเครื่องโหลดรุ่นใหม่ หาก Confirm ยังล้มเหลว ให้ตรวจ Rules/runtime version, R01/R16 readiness/version, confirm lock, network และ quota; ห้ามลบ legacy markers หรือเริ่มรอบใหม่เพื่อแก้เฉพาะหน้า
 
@@ -290,7 +291,7 @@ Git safety:
 - Android: bump version, update `version.json`, commit, tag release และ push tags
 - **Product Branch Master ต้องอัปทีละสาขา 4 รอบ** (SRC/KKL/SSS/WH) — สลับสาขาก่อนอัปทุกครั้งและตรวจชื่อสาขาบนหัวจอ
   ไฟล์ลงที่ `{branch}_pm` ของ**สาขาที่เลือกอยู่ตอนนั้น** อัปผิดสาขา = catalog **และตัวหาร Progress** ของสาขานั้นผิดทันทีผ่าน listener
-  ตั้งแต่ ส.ค. 2026 การอัป PBM **เปลี่ยนตัวหาร Progress ทุกเครื่องของสาขานั้นทันที** (PBM Col D ∈ A/B/C เป็นตัวตัดสิน) — คำนวณเลขที่คาดหวังใน Excel ไว้ก่อน, ตรวจ toast ว่าจำนวน `A/B/C` ไม่เป็น 0 และแจ้งหน้างานล่วงหน้า ไม่งั้นจะถูกรายงานว่า "ระบบพัง"
+  ตั้งแต่ ส.ค. 2026 การอัป PBM **เปลี่ยนตัวหาร Progress ทุกเครื่องของสาขานั้นทันที** (PBM Col D ∈ A/B/C/REVIEW เป็นตัวตัดสิน) — คำนวณเลขที่คาดหวังใน Excel ไว้ก่อน, ตรวจ toast ว่าจำนวน `A/B/C/REVIEW` ไม่เป็น 0 และแจ้งหน้างานล่วงหน้า ไม่งั้นจะถูกรายงานว่า "ระบบพัง"
 - หลังแก้ behavior ให้ update `CLAUDE.md` หรือ skill ที่เกี่ยวข้อง เพื่อไม่ให้ agent รอบถัดไปย้อน Bug เดิม
 
 Baseline ขณะเขียนเอกสารนี้คือ `30c57ca` (`Move pharmacy confirmation to desktop`) ให้ตรวจ commit ล่าสุดทุกครั้ง เพราะเอกสารนี้อาจตามหลังโค้ดในอนาคต
