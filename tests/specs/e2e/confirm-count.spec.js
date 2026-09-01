@@ -16,7 +16,7 @@ async function scanTimes(page, barcode, times) {
 async function seedScannedItems(pda) {
   await scanTimes(pda.page, 'B-NORM', 10);  // S-NORM sys 10 → pass
   await scanTimes(pda.page, 'B-F05', 3);    // S-F05  sys 5  → audit (mismatch)
-  await scanTimes(pda.page, 'B-NEG', 3);    // S-NEG negSys: บวกปกติ → 3 → audit (ระบบติดลบ = ต้องให้เภสัชดูชั้นจริง)
+  await scanTimes(pda.page, 'B-NEG', 3);    // S-NEG sys -3: บวกปกติ → 3 · ไม่มี R16 รับเข้ามาอธิบาย → 3 ≠ -3 → audit
   await scanTimes(pda.page, 'B-ZERO', 1);   // S-ZERO sys 0: บวก 1 ตามปกติ (ไม่มีกฎนับ 0 แล้ว) → audit
   await pda.page.waitForFunction(() => state.scanData.get('S-NORM')?.countedQty === 10 &&
     state.scanData.get('S-F05')?.countedQty === 3 && state.scanData.get('S-NEG')?.countedQty === 3 &&

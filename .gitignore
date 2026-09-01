@@ -5,6 +5,11 @@ stock_backup_*.json
 *.CSV
 *.csv
 
+# auto-r01: log เป็นของเฉพาะเครื่อง (แต่ละเครื่องที่ตั้ง Task Scheduler มีของตัวเอง)
+auto-r01/auto_r01.log
+auto-r01/auto_r01.log.1
+auto-r01/__pycache__/
+
 # automated tests (tests/.gitignore คุมรายละเอียดอีกชั้น)
 tests/node_modules/
 tests/vendor/

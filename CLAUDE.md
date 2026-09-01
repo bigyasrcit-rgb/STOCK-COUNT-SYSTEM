@@ -81,7 +81,7 @@ libs/
 android-app/        ← WebView wrapper (Kotlin)
 version.json        ← APK self-update manifest
 firestore.rules     ← สำเนา rules; deploy จริงต้อง Publish ผ่าน Firebase Console
-auto-r01/           ← R01 auto import สำหรับ SRC/KKL/SSS (Windows Task Scheduler)
+auto-r01/           ← R01 auto import ทุกเช้า 08:10 ครบ 4 branch แยกตาม Col D (Windows Task Scheduler)
 api/ip.js           ← Vercel function สำหรับ login log IP
 ```
 
@@ -161,7 +161,7 @@ state = {
   - 🗑️ **DEL** = `isDel && _countableSkus.has(sku)` → เป็น "งานที่ต้องเดินไปหา" ไม่ใช่รายงานของนอกแคตตาล็อกทั้งหมด · **แท็ก DEL แดงในตารางยังขึ้นครบทุกตัว** (คนละเรื่องกัน)
   - แก้ตรงนี้ **มีผลกับ Export Excel ของ filter นั้นด้วย** (filter chain ร่วมกันโดยเจตนา)
 - **invariant: ตัวเศษกับตัวหารต้องมาจากชุดเดียวกันเสมอ** — เดิมตัวเศษวนจาก `scanData` แต่ตัวหารนับจาก `r01Data` คนละแหล่ง ทำให้ % ทะลุ 100 ได้เมื่อกรองข้างเดียว
-- ⚠️ **ห้ามใช้ `skuMap.systemQty` อ่านค่า G** — สาขายา clamp `negSys` เป็น 0 ไปแล้ว จึงแยก "G=0 จริง" กับ "G ติดลบ (ขายของขาด)" ไม่ออก ต้องอ่านจาก `state.r01Data` ค่าดิบเท่านั้น
+- ⚠️ **อ่านค่า G จาก `state.r01Data` เท่านั้น** — เป็นแหล่งความจริงเดียวของยอดระบบ · `skuMap.systemQty` เก็บค่าดิบเหมือนกันแล้วตั้งแต่เลิก clamp (ส.ค. 2026 รอบ 2) แต่มันถูก derive มาอีกทอดและอาจค้างเมื่อ R05 ยังมาไม่ถึง
 - `cat_coded:true` บน `{branch}_pm` เป็น **marker สำหรับดูบน Console เท่านั้น** ว่าสาขาไหนอัปไฟล์รุ่นใหม่แล้ว — **ไม่มีโค้ดอ่าน** อย่าเอาไปทำ logic
 - ระหว่าง rollout เครื่องรุ่นเก่ายังนับ `G ≠ 0` อย่างเดียว (ไม่รู้จัก `cat`) จึงเห็น Total SKU **น้อยกว่า** เครื่องรุ่นใหม่ — บังคับให้โหลดรุ่นใหม่ครบก่อนอัป PBM ที่มี Col D
 - ⚠️ **PBM เป็นตัวตัดสินตัวหารแล้ว → ทุกจุดที่ PBM/R01 เปลี่ยนต้องรีคำนวณ แม้ R05 ยังมาไม่ถึง** — guard เดิม `if(state.r05Data.length)rebuildMaps()` ทำให้ตัวเลขค้าง จึงต้องมี `else {_rebuildCountableSkus();updateStats();}` คู่กันทุกจุด (`applyProductMasterMeta`, `_applyR01BaselineUpdate`, `loadSession`, `restoreFromFirestore`, `restoreMasterFromFirestore` สาย "ไม่มี PBM")
@@ -182,8 +182,8 @@ state = {
   - จำเป็นเพราะกติกา A/B/C ดึงสินค้า `G=0` เข้าตัวหาร Progress แต่ "ชั้นว่างจริง" คือเคสปกติของกลุ่มนี้ → สแกนไม่ได้ (ไม่มีของให้ยิง) และปุ่ม 🚫 ติดเงื่อนไข `systemQty>0` → **ค้าง `pending` ถาวร Progress ไม่มีวันถึง 100%**
   - ไม่ขัดเจตนากฎเดิม: กฎมีไว้กัน "พิมพ์เลขผิดแล้วยอดพอง" ซึ่งการกรอก `0` ทำไม่ได้ · ของแพงที่มีของจริงบนชั้นยังต้องสแกนทีละชิ้นเหมือนเดิม (กรอกเลขอื่นยังถูกปฏิเสธ)
   - `_canEnterZeroOnly()` = เงื่อนไขแสดงช่อง · `_canEnterCountQtyValue(skuInfo,v)` = เงื่อนไขรับค่า — **ทั้งคู่ต้องแก้พร้อมกันเสมอ** ทั้ง 5 จุด (`renderScanList`, `patchScanRow`, `updateInlineQty`, `updatePopupQty`, `renderPopupTable`)
-  - ⚠️ **ต้องอ่าน G ดิบผ่าน `_rawSystemQty()`** (map `_r01RawQty` สร้างคู่กับ `_countableSkus` ใน `_rebuildCountableSkus()`) **ห้ามอ่าน `skuMap.systemQty`** — สาขายา clamp `negSys` เป็น 0 ไปแล้ว จะแยก "G=0 จริง" กับ "G ติดลบ" ไม่ออก
-  - ครอบทั้ง WH และสาขายา · `G<0` (negSys) เข้าข่ายด้วย
+  - ⚠️ **ต้องอ่าน G ผ่าน `_rawSystemQty()`** (map `_r01RawQty` สร้างคู่กับ `_countableSkus` ใน `_rebuildCountableSkus()`) — ผูกกับ `state.r01Data` โดยตรง จึงถูกต้องแม้ `skuMap` ยังไม่ถูกสร้าง (R05 มาไม่ถึง → `rebuildMaps()` early-return)
+  - ครอบทั้ง WH และสาขายา · `G<0` เข้าข่ายด้วย → กรอก 0 แล้ว Confirm ตัดสินด้วยสูตรปกติ (ลงตัวพอดี = pass · ไม่ลงตัว = audit) ดู §Status Lifecycle
   - เทสตรึงไว้ที่ `tests/specs/logic/zero-qty-gate.spec.js` (ตรึงทั้ง "0 ต้องผ่าน" และ "ค่าอื่นต้องไม่ผ่าน")
 - **DEL กรอกได้แล้วถ้าบาร์โค้ดมีราคา < 1000** (เปลี่ยนจากเดิมที่บล็อกทุกกรณี — `_canEnterCountQty` ไม่เช็ค `isDel` อีกต่อไป)
 - กฎราคาต้องครอบทั้ง RESULT row, stock popup, `barcode,qty` และฟังก์ชันแก้จำนวน — **จุดที่ตัดสินใจว่า "แสดงช่อง input หรือไม่" (`renderScanList`, `patchScanRow`) ต้องใช้กฎเดียวกับจุดที่ตรวจ** ไม่งั้นช่องจะโผล่ให้พิมพ์แล้วค่อยเด้งปฏิเสธ; ห้ามนำ threshold จาก `systemQty` กลับมา
@@ -208,37 +208,44 @@ pending → scanning → pass
                            → (verify fail)  → stock_adjustment
                    → stock_adjustment  (สาขายา: noStock — ผู้ช่วยยืนยันชั้นว่างทั้งที่ระบบมีของ, ข้ามเภสัช verify)
 ```
-`negSys` (ระบบติดลบ) **ไม่ลัดไป stock_adjustment แล้ว (ส.ค. 2026)** — บังคับผ่าน `audit` ให้เภสัชตรวจก่อนเสมอ
-
 `unknown` = barcode ไม่พบในระบบ (parallel track)
 `audit_check` = legacy, ยังอยู่ใน codebase แต่ไม่ถูกผลิตใหม่แล้ว
-`negSys` = สาขายาเท่านั้น: systemQty < 0 ใน R01 → skuMap เก็บ 0 + flag (ดู SKILL-scan-engine)
+`negSys` = **ตายแล้ว (ส.ค. 2026 รอบ 2)** — เลิก clamp ค่าติดลบ ธงจึงเป็น `false` เสมอ · field ยังอยู่ใน `skuMap` ห้ามลบ (`showZeroSysModal` อ่านอยู่)
 
 **กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกหมดแล้ว (ส.ค. 2026) — ห้ามนำกลับมา**
 ทั้ง G=0 และ G ติดลบ สแกนแล้ว **บวกตามปกติ** เหมือน SKU อื่น
 - **G = 0** → ยิงมาจริง → `audit` · จะอยู่ใน Progress หรือไม่ขึ้นกับ PBM Col D (A/B/C/REVIEW = อยู่) ดู §Total SKU / Progress
-- **G ติดลบ (`negSys`)** → **บังคับเป็น `audit` เสมอไม่ว่านับได้เท่าไร** (เช็คก่อนสูตร pass ใน `_buildPendingScanEvaluation` และตรงกับ `reEvaluateAuditItems`)
-  เหตุผล: ยอดระบบติดลบ = ข้อมูลสต็อกผิดแน่นอน ต้องให้เภสัชไปดูของบนชั้นจริงทุกตัว ห้ามลัดไป `stock_adjustment` เอง และห้ามเป็น `pass`
-  ⚠️ ต้องเช็ค `negSys` **ก่อน** `effectiveCnt===sys` เพราะ systemQty ถูก clamp เป็น 0 แล้ว → นับ 0 จะกลายเป็น pass เงียบๆ
+- **G ติดลบ → ตัดสินด้วยสูตรปกติ `effectiveCnt === sys` (ส.ค. 2026 รอบ 2 — เปลี่ยนจากเดิมที่บังคับ audit เสมอ)**
+  - **เลิก clamp แล้ว** — `_clampNeg=false` ทุก branch ใน `rebuildMaps()` → `skuMap.systemQty` เก็บค่าติดลบดิบ · `negSys` เป็น `false` เสมอ
+  - เหตุผลที่ถอดกฎเดิม: สมมติฐาน *"ติดลบ = ข้อมูลผิดแน่นอน"* **ไม่จริง** — เคสจริงคือจ่ายของให้ลูกค้าเท่าที่มีแต่ R01 ของไม่พอ ยอดเลยติดลบ (ค้างลูกค้า) พอคลังส่งของมาเติมก็ถูกต้องแล้ว แต่ระบบยังบังคับ audit ทุกวันทั้งที่ไม่มีอะไรผิด
+  - พอ `sys` เป็นค่าดิบ สูตรเดิมตัดสินได้ถูกเอง **ไม่ต้องแก้สูตร Confirm**:
+    `R01 = −2` · คลังส่ง 5 (R16 inbound) · นับได้ 3 → `effectiveCnt = 3 − 5 = −2 === sys(−2)` → **pass**
+  - ตัวคุมความปลอดภัยเปลี่ยนจาก "ธง `negSys`" เป็น **"สูตรต้องลงตัวพอดี"** ซึ่งเข้มกว่าเพราะต้องมีหลักฐาน R16 มายืนยัน:
+    `R01 = −2` · ไม่มีรับเข้า · นับ 0 → `0 ≠ −2` → **audit** ตามเดิม
+  - ⛔ **ห้ามนำ clamp กลับมา** — clamp ทำให้ `sys` เป็น 0 แล้ว "นับ 0" จะ pass เงียบๆ จนต้องมีธง `negSys` มากันอีกชั้น (วงจรเดิมที่เพิ่งถอดออก)
+  - ⚠️ `_buildPendingScanEvaluation` กับ `reEvaluateAuditItems` ต้องใช้กติกาเดียวกันเป๊ะ ไม่งั้นอัพ R16 ใหม่แล้วสถานะแกว่ง
+  - **ผลพลอยได้: แก้บั๊กใบปรับสต็อกที่ซ่อนอยู่** — เดิม clamp ทำให้ `diff = cnt − 0` ของติดลบที่รีเช็คได้ 0 กลายเป็น `0`
+    แล้วถูกกรองออกจาก **ทั้ง ORDS และ IRPS** (`diff>=0` / `diff<=0`) → แถวหายเงียบ ยอดติดลบไม่เคยถูกแก้ในระบบ · ตอนนี้ได้ IRPS `+2` ถูกต้อง
+  - เทสตรึงไว้ที่ `tests/specs/logic/negsys-pass.spec.js` (ตรึง "อธิบายได้ → pass", **"อธิบายไม่ได้ → ต้องยัง audit"** และ "ใบปรับสต็อกต้องไม่หายเงียบ")
 - `zeroSysModal`/`showZeroSysModal`/`confirmZeroSys` ยังเป็น dead code ที่ต้องเก็บไว้ และ `_zeroSysHold` ยังเป็น hold-guard ทุกจุด **ห้ามลบ**
 - **ยอดรีเช็ค 0 รองรับแล้ว** (`updatePharmacyRecheckQty` + `getPharmacistAuditPendingMap`) = "เภสัชดูแล้วไม่มีของ" ต่างจาก "ยังไม่รีเช็ค" (`recheckQty == null`)
   จำเป็นเพราะ negSys ส่วนใหญ่ไม่มีของจริง ถ้ากรอก 0 ไม่ได้จะค้าง audit ถาวร · ผลตัดสินใช้สูตรเดิม (เทียบกับ `recheckSystemQty` ที่ freeze ไว้)
 `noStock` = สาขายาเท่านั้น: ระบบมี stock แต่ผู้ช่วยยืนยันว่าไม่มีของจริง → Confirm เป็น `stock_adjustment` ตามกติกาปัจจุบัน
-`backorder` = **สาขายาเท่านั้น: เภสัชมาร์คว่า "ค้างส่งลูกค้า" (ส.ค. 2026)** — เคสกลับด้านของ `noStock`
-- ปุ่ม `📦 ค้างส่ง` ในป็อปอัพ Audit Verify · `_canMarkBackorder()` เปิดเฉพาะ `status==='audit'` + ยังไม่มี `auditor` + role เภสัช + **`_rawSystemQty(sku) <= 0`**
+`backorder` = **สาขายาเท่านั้น: เภสัชมาร์คว่า "ค้างส่งลูกค้า" (ส.ค. 2026 รอบ 2)** — เคสกลับด้านของ `noStock`
+- ปุ่ม `📦 ค้างส่ง` ในป็อปอัพ Audit Verify · `_canMarkBackorder()` เปิดเฉพาะ `status==='audit'` + ยังไม่มี `auditor` + role เภสัช + **`_rawSystemQty(sku) <= 0`** (ระบบไม่มีของ)
 - **ทำไมต้องมี:** ยอดติดลบเกิดเพราะการขายถูกบันทึกแล้วแต่ของยังไม่เข้า = เป็นหนี้ลูกค้าอยู่จริง
   ถ้าออกใบปรับสต็อกดันยอดกลับเป็น 0 = ลบร่องรอยหนี้ แล้วส่วนต่างไปโผล่ใหม่ตอนของเข้า
   (`ปรับเป็น 0` → คลังส่ง 5 → ระบบ 5 · ของจริง 5 → จ่ายของค้าง 2 ที่ขายไปแล้ว → ระบบ 5 · ของจริง 3 = **เพี้ยน**)
 - **เดินรางเดียวกับ "รีเช็คได้ 0" ทุกประการ** — `markBackorderItem()` ตั้ง `recheckQty=0` + `recheckBy/At` + `_freezeRecheckBaseline()` แล้วเติมธง `backorder:true`
   จึงเข้าคิว `getPharmacistAuditPendingMap()` เองโดยไม่ต้องแก้ · **ไม่บันทึกจำนวนปลอม** — 0 คือของจริงบนชั้น ธงบอกว่า "ว่างเพราะค้างส่ง ไม่ใช่ของหาย"
-- `confirmAuditVerifyItem()` เช็ค `sd.backorder` **ก่อนสูตร** → `pass` และไม่เข้าใบปรับสต็อก
+- `confirmAuditVerifyItem()` เช็ค `sd.backorder` **ก่อนสูตร** → `pass` (ถ้าปล่อยลงสูตร `0` ไม่มีทางเท่า `baseSys` ติดลบ → จะได้ `stock_adjustment`)
 - **กด PDA ได้ แต่ pass จริงตอน Confirm บน Desktop** — ตรงกับรูปแบบเดิม "PDA มาร์ค → Desktop ยืนยัน" (ปุ่ม Confirm ยัง guard `_isPdaApp()`)
 - ⚠️ **ธงต้องเดินทางครบทุก path** — marker payload, `_applyPharmacyAuditMarkersToState` (ตั้ง/ล้าง), audit log, `resetRecheckItem`, `reopenPharmacyAudit`, `_addRecheckScanQty` (สแกนทับ = ถอนธง), reset ข้ามรอบ
   `_scanItemPayload`/`_scanItemFingerprint` พาไปเองเพราะวนทุก field ที่ไม่ใช่ `SCAN_ITEM_LOCAL_FIELDS`
-- ⚠️ **`_sameBranchRecheck()` ต้องเทียบ `backorder`** — ธงพลิกผลตัดสิน ถ้าไม่เทียบ คนกดปุ่มกลางงาน Confirm จะไม่ถูกจับว่าเปลี่ยน
-- **ข้อจำกัดที่ยอมรับแล้ว:** ไม่ได้แก้ R01 → พรุ่งนี้ยอดยังติดลบ เข้า audit ใหม่ ต้องกดอีก จนของเข้าจริง
+- ⚠️ **`_sameBranchRecheck()` ต้องเทียบ `backorder`** — ธงพลิกผลจาก `stock_adjustment` เป็น `pass` ถ้าไม่เทียบ คนกดปุ่มกลางงาน Confirm จะไม่ถูกจับว่าเปลี่ยน
+- **ข้อจำกัดที่ยอมรับแล้ว:** ไม่ได้แก้ R01 → พรุ่งนี้ยอดยังติดลบ เข้า audit ใหม่ ต้องกดอีก จนของเข้าจริง (แล้ว R16 จะอธิบายได้เอง)
   และถ้าเภสัชกดกับของที่หายจริง ยอดจะไม่มีวันถูกแก้ — ร่องรอยมีแค่ `auditor` + `backorder` ใน Audit Log
-- เทสตรึงไว้ที่ `tests/specs/logic/backorder-mark.spec.js`
+- เทสตรึงไว้ที่ `tests/specs/logic/backorder-mark.spec.js` (ตรึงทั้ง "มาร์คแล้วไม่เข้าใบปรับสต็อก" และ **"ไม่ได้มาร์คต้องยังเข้าใบเหมือนเดิม"**)
 
 สูตร Confirm รอบแรกห้ามเปลี่ยนโดยพลการ:
 

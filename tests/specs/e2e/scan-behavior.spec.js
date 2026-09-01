@@ -33,12 +33,14 @@ test.describe('pharmacy scan behaviors', () => {
   });
 
   // ส.ค. 2026: กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกทั้งหมด — negSys ก็บวกตามปกติเหมือน SKU อื่น
-  test('negSys (systemQty<0): clamped to 0 in skuMap, every scan adds normally', async ({ browser }) => {
+  test('systemQty<0: เก็บค่าติดลบดิบ ไม่ clamp · ทุกสแกนบวกตามปกติ', async ({ browser }) => {
     const a = await bootFreshCount(browser, { role: 'assistant', user: 'PDA-A', mode: 'pda' });
 
+    // ส.ค. 2026 รอบ 2: เลิก clamp ค่าติดลบเป็น 0 — ติดลบจากการค้างของลูกค้าเป็นสถานะปกติ ไม่ใช่ข้อมูลผิด
+    // sys ที่เป็นค่าดิบทำให้สูตร effectiveCnt===sys ตัดสินได้ถูกเอง (ดู negsys-pass.spec.js)
     const info = await a.page.evaluate(() => state.skuMap.get('S-NEG'));
-    expect(info.systemQty).toBe(0);      // clamp ยังทำงาน
-    expect(info.negSys).toBeTruthy();    // flag ยังอยู่ — เป็นตัวบังคับ audit ตอน Confirm
+    expect(info.systemQty).toBe(-3);     // ค่าดิบจาก R01 ไม่ถูกบีบเป็น 0
+    expect(info.negSys).toBeFalsy();     // ธงบังคับ audit ถูกถอดแล้ว
 
     await scanOnce(a.page, 'B-NEG');
     await a.page.waitForFunction(() => state.scanData.get('S-NEG')?.status === 'scanning', null, { polling: 100 });

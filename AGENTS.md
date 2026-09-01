@@ -14,15 +14,26 @@
 
 ### งานค้างที่ต้องรู้ก่อนแตะของที่เกี่ยวข้อง
 
-- **ปุ่ม "ค้างส่งลูกค้า" (`backorder`) — เภสัชปิดงานสินค้าติดลบโดยไม่ออกใบปรับสต็อก (ส.ค. 2026)**
+- **ยอดระบบติดลบ (G < 0) ไม่ใช่ข้อมูลผิดเสมอไป (ส.ค. 2026 รอบ 2)** — เป็นสถานะปกติเมื่อจ่ายของให้ลูกค้าแล้ว R01 ของไม่พอ (ค้างลูกค้า)
+  - **เลิก clamp ค่าติดลบทุก branch** (`_clampNeg=false`) · ธง `negSys` เป็น `false` เสมอ · **ห้ามนำ clamp กลับมา** — มันทำให้ "นับ 0" pass เงียบๆ จนต้องมีธงมากันอีกชั้น
+  - invariant: **ติดลบที่ R16 รับเข้าอธิบายได้พอดี = `pass` · ที่อธิบายไม่ได้ = `audit`** — ตัดสินด้วยสูตร `effectiveCnt === sys` ตัวเดิม ไม่มีทางลัด
+  - `_buildPendingScanEvaluation` กับ `reEvaluateAuditItems` ต้องใช้กติกาเดียวกันเป๊ะ ไม่งั้นอัพ R16 ใหม่แล้วสถานะแกว่ง
+  - เทสตรึงไว้ที่ `tests/specs/logic/negsys-pass.spec.js`
+
+- **ปุ่ม "ค้างส่งลูกค้า" (`backorder`) — เภสัชปิดงานสินค้าติดลบโดยไม่ออกใบปรับสต็อก (ส.ค. 2026 รอบ 2)**
   - เปิดเฉพาะ `_rawSystemQty(sku) <= 0` + `status==='audit'` + ยังไม่มี `auditor` + role เภสัช · กด PDA ได้ แต่ pass ตอน Confirm บน Desktop
   - เหตุผล: ยอดติดลบ = หนี้ลูกค้าที่ขายไปแล้ว การดันกลับเป็น 0 จะไปสร้างส่วนต่างใหม่ตอนของเข้า
-  - invariant: **มาร์คแล้ว → `pass` และต้องไม่มีแถวในใบปรับสต็อก · ไม่ได้มาร์ค → ตัดสินด้วยสูตรเดิมทุกประการ**
+  - invariant: **มาร์คแล้ว → `pass` และต้องไม่มีแถวในใบปรับสต็อก · ไม่ได้มาร์ค → `stock_adjustment` และต้องมีแถวเหมือนเดิม**
   - ธงต้องเดินทางครบทุก path (marker/audit log/reset/reopen/สแกนทับ) และ `_sameBranchRecheck()` ต้องเทียบธงด้วย
   - เทสตรึงไว้ที่ `tests/specs/logic/backorder-mark.spec.js`
 
-- **`auto-r01/` ยังห้ามเปิดใช้** — สคริปต์เสร็จแล้วแต่ไม่เคยเปิด และมีบั๊ก latent 4 ข้อที่จะทำให้ Confirm พังทุกวัน (เขียนทับ document ลบ R16 meta, ไม่เขียน `r01Version`/`r01BaselineAt`, เครื่องที่ login ค้างไม่โหลด R01 ใหม่) → **อ่าน `auto-r01/TODO-safe-enable.md` ก่อนแก้หรือเปิด Task Scheduler**
-  แก้สคริปต์ + ทดสอบต้องทำที่เครื่อง `BigYa-spare` (ไฟล์ CSV จริง + Task Scheduler อยู่ที่นั่น) ส่วน `index.html` ทำที่เครื่องไหนก็ได้
+- **`auto-r01/` แก้บั๊กครบและครอบ 4 branch แล้ว (ส.ค. 2026)** — อัป R01 ให้ WH/SRC/KKL/SSS ทุกเช้า 08:10 โดยแยกตาม Col D (`CF_WNAME`)
+  - **ห้ามอัปไฟล์ `Allstock.CSV` (รวมทุก branch) ผ่านหน้าเว็บ** — `loadR01` ไม่อ่าน Col D และ `qtyMap.set()` เป็น last-wins → ทุกสาขาได้ยอดของ branch ท้ายไฟล์ (SKU 5,373/6,687 ตัวซ้ำข้าม branch)
+  - **สคริปต์ต้องให้ผลเท่า `loadR01()` ทุกไบต์** — แก้กติกา parse (`R01_NON_COUNT_*`, index คอลัมน์, `parse_qty`) ฝั่งใดฝั่งหนึ่งต้องแก้อีกฝั่งพร้อมกันเสมอ
+  - ⛔ **ห้ามใส่ `qty <= 0 → ข้าม` กลับเข้าสคริปต์** — จะทิ้ง SKU ที่ต้องนับเกือบครึ่ง และ `negSys` หายหมด
+  - **WH: R16.104/103 ถูก invalidate ทุกเช้า** (by design) Supervisor ต้องอัป R16 ใหม่ก่อน Confirm · ปิดได้โดยเอา `"WH"` ออกจาก `AUTO_BRANCHES`
+  - ปิดฉุกเฉิน: `Disable-ScheduledTask -TaskName "AutoR01Import"` → รายละเอียดใน `auto-r01/TODO-safe-enable.md`
+  - แก้สคริปต์ + ทดสอบต้องทำที่เครื่อง `BigYa-spare` (ไฟล์ CSV จริง + Task Scheduler อยู่ที่นั่น) ส่วน `index.html` ทำที่เครื่องไหนก็ได้
 
 ## 2. โครงสร้างระบบ
 
@@ -37,7 +48,7 @@
 | `android-app/` | Android WebView wrapper สำหรับ PDA (`StockCountPDA` User-Agent) | แก้ native แล้วต้องออก APK version ใหม่ |
 | `version.json` | manifest สำหรับ APK self-update | ต้องตรงกับ `android-app/app/build.gradle` |
 | `firestore.rules` | สำเนา rules เพื่อ track ใน Git | แก้ไฟล์นี้ไม่ใช่การ deploy; ต้อง Publish ใน Firebase Console |
-| `auto-r01/` | import R01 ของ SRC/KKL/SSS อัตโนมัติ | ทดสอบด้วย `--dry-run` ก่อนเขียน Firestore จริง |
+| `auto-r01/` | import R01 ของ WH/SRC/KKL/SSS อัตโนมัติทุกเช้า แยกตาม Col D | ทดสอบด้วย `--dry-run` ก่อนเขียน Firestore จริง · ต้องคง parity กับ `loadR01()` |
 | `คู่มือการใช้งาน.html` | คู่มือรวมทุก role | เป็น standalone HTML |
 | `คู่มือ-สาขา.html` | คู่มือ assistant/pharmacist | ไม่กระทบ runtime หลัก |
 | `คู่มือ-คลัง.html` | คู่มือ warehouse/supervisor | ไม่กระทบ runtime หลัก |
@@ -85,9 +96,10 @@ effectiveQty = countedQty + soldQty + r16103Qty - inboundQty
 - `r16103Qty` ใช้กับ WH สำหรับของรับเข้าแต่ยังไม่ขึ้นชั้น
 - `effectiveQty === systemQty` → `pass`
 - สาขายา `noStock` ที่เข้าเงื่อนไข → `stock_adjustment`
-- **สาขายา `negSys` (ระบบติดลบ) → บังคับเป็น `audit` เสมอไม่ว่านับได้เท่าไร (ส.ค. 2026)**
-  ต้องเช็ค `negSys` **ก่อน** `effectiveCnt===sys` เพราะ systemQty ถูก clamp เป็น 0 แล้ว → นับ 0 จะกลายเป็น `pass` เงียบๆ
-  เดิมลัดไป `stock_adjustment` โดยไม่ผ่านเภสัช — ห้ามย้อนกลับ
+- **ยอดระบบติดลบ (G < 0) → ตัดสินด้วยสูตรเดียวกันนี้ ไม่มีทางลัด (ส.ค. 2026 รอบ 2)**
+  เลิก clamp ค่าติดลบทุก branch แล้ว (`_clampNeg=false`) ธง `negSys` เป็น `false` เสมอ
+  ติดลบที่ R16 รับเข้าอธิบายได้พอดี → `pass` (เช่น `sys −2` · รับเข้า 5 · นับ 3 → `3−5 = −2`) · อธิบายไม่ได้ → `audit`
+  ⛔ **ห้ามนำ clamp กลับมา** — clamp ทำให้ `sys` เป็น 0 แล้ว "นับ 0" จะ `pass` เงียบๆ จนต้องมีธงมากันอีกชั้น
 - `systemQty===0` ที่นับเจอของต้องไป `audit` ให้เภสัชรีเช็คเสมอ ห้ามลัดเป็น `stock_adjustment` เอง
 - **กฎ "สแกนครั้งแรกนับ 0" ถูกถอดออกหมดแล้ว (ส.ค. 2026)** — ทั้ง G=0 และ G ติดลบสแกนแล้วบวกตามปกติ ห้ามนำกลับมา
 - **ยอดรีเช็ค 0 ต้องบันทึกและยืนยันได้** (= "ตรวจแล้วไม่มีของ") ต่างจาก "ยังไม่รีเช็ค" (`recheckQty == null`)
@@ -95,7 +107,7 @@ effectiveQty = countedQty + soldQty + r16103Qty - inboundQty
 - กรณีอื่น → `audit`
 - WH Recheck รอบสองเปรียบเทียบ `recheckQty` กับ `systemQty` จาก R01 ล่าสุดบน Firestore โดยตรง ไม่ใช้ค่า local ที่อาจค้าง
 
-ห้ามแก้เครื่องหมายบวก/ลบ, TRANDATE cutoff, การ clamp `negSys`, เงื่อนไข `noStock`, หรือความหมายของ Pass/Audit/Stock Adjustment โดยไม่ได้รับอนุมัติพร้อมชุดทดสอบข้อมูลจริง
+ห้ามแก้เครื่องหมายบวก/ลบ, TRANDATE cutoff, การจัดการค่าติดลบ (ห้ามนำ clamp กลับมา), เงื่อนไข `noStock`, หรือความหมายของ Pass/Audit/Stock Adjustment โดยไม่ได้รับอนุมัติพร้อมชุดทดสอบข้อมูลจริง
 
 ## 5. Firestore documents และ precedence
 
@@ -206,7 +218,7 @@ R01/R16 master
 
 | (ก.ค. 2026) | session blob ชนเพดาน 1 MiB ของ Firestore เมื่อนับครบทั้งสาขา (~1.6 MB) แล้ว `ref.set()` throw โดยโชว์แค่ `'Sync Error'` — ข้อมูลนับหายเงียบ | `scanData` ต้องอยู่ใน `{branch}/items/{sku}` (schema v2); `_reportSyncError()` ต้องรายงานกรณีเกินขนาดให้ชัดแทน throw เงียบ; ห้าม dual-write blob+items |
 | (ส.ค. 2026) | `WH_count_confirmations` เก็บ SKU เป็น dynamic map จนชนเพดาน 40,000 index entries ที่ 873 markers ทำให้ Supervisor Confirm ต่อไม่ได้ ทั้งที่ document ยังไม่ถึง 1 MiB | ห้ามเพิ่ม final ลง legacy map; ใช้ `WH/confirm_ops/{opId}/results/{sku}` และ atomic committed pointer, เก็บ legacy read-only ระหว่าง migration และ roll-forward หลังมี post-cutover commit |
-| (ส.ค. 2026) | Progress มีตัวเศษกับตัวหารมาคนละแหล่ง (ตัวเศษวนจาก `scanData`, ตัวหารนับจาก `r01Data`) → ถ้ากรอง SKU ออกข้างเดียว % ทะลุ 100 ได้ | **ตัวเศษกับตัวหารต้องมาจาก `_countableSkus` ชุดเดียวกันเสมอ** ห้ามแยกแหล่งคำนวณ · **ห้ามใช้ `skuMap.systemQty` แยก "G=0" กับ "G ติดลบ"** เพราะสาขายา clamp `negSys` เป็น 0 แล้ว ต้องอ่าน `state.r01Data` ค่าดิบ |
+| (ส.ค. 2026) | Progress มีตัวเศษกับตัวหารมาคนละแหล่ง (ตัวเศษวนจาก `scanData`, ตัวหารนับจาก `r01Data`) → ถ้ากรอง SKU ออกข้างเดียว % ทะลุ 100 ได้ | **ตัวเศษกับตัวหารต้องมาจาก `_countableSkus` ชุดเดียวกันเสมอ** ห้ามแยกแหล่งคำนวณ · **อ่าน G จาก `state.r01Data` เท่านั้น** — เป็นแหล่งความจริงเดียว และมีอยู่แม้ `skuMap` ยังไม่ถูกสร้าง (R05 มาไม่ถึง) |
 | (ส.ค. 2026) | การ์ด Counted/Pass วนทุก SKU ใน `skuMap` แต่ Progress วนเฉพาะ `_countableSkus` → Counted ทะลุ Total SKU ได้ · ปุ่มกรอง ⏳/🗑️ ในรายการสินค้าก็ไม่ตรงกับ Progress เช่นกัน | **Total SKU · Counted · Pass · ตัวเศษ Progress · ปุ่ม ⏳ ยังไม่ได้นับ · ปุ่ม 🗑️ DEL ต้องใช้ `_countableSkus` ชุดเดียวกันหมด** · **`Audit` + sub-progress ห้ามกรอง** (ต้องเท่ากับ badge `updateAuditVerifyCount()` ไม่งั้นซ่อนงานเภสัช) → ยอมรับว่า `Pass + Audit ≠ Counted` · ใน `updateStats()` บรรทัด `if(!_countableSkus.has(sku))continue;` ต้องอยู่ **ใต้** การนับ audit เสมอ · **ห้ามแก้การ์ดที่ 2 ของ WH** (`auditTotal` = "Recheck ทั้งหมด" คนละความหมาย) · Dashboard ข้ามสาขาไม่กรองโดยเจตนา |
 | (ส.ค. 2026) | Product Master เป็นไฟล์กลางไฟล์เดียวทุกสาขา ทำให้ Total SKU เป็นเลขทั้งบริษัทและต้องมีการ์ด `SKU BRANCH` ซ้อน | PM เป็น `{branch}_pm` ต่อสาขา · **ห้ามใส่ fallback ไป `global_pm`** (สาขาที่ยังไม่อัปต้องเห็น "ยังไม่โหลด" ไม่ใช่ catalog สาขาอื่น) · `restoreMasterFromFirestore` ต้องล้าง PM เมื่อ doc ไม่มี · ห้ามลบ `global_pm` บน cloud (rollback) |
 | (ส.ค. 2026) | กติกา "นับเฉพาะ R01 ที่ G ≠ 0" ทำให้สินค้าขายดี (PBM Col D = A/B/C) ที่ระบบขึ้นสต็อก 0 หลุดจากงานนับ ทั้งที่ต้องเดินไปดูของบนชั้นจริงทุกครั้ง | `_countableSkus` = R01 · หมวด Col P นับได้ · **และ ( `G ≠ 0` หรือ PBM Col D ∈ {A,B,C} )** · ⚠️ **ต้องเป็น `หรือ` ห้ามเป็น `และ`** — เงื่อนไข A/B/C มีแต่เพิ่ม ทำให้ PBM ไฟล์เก่าที่ไม่มี `cat` ให้ผลเท่ากติกาเดิมเองโดยไม่ต้องมี feature flag · เปลี่ยนเป็น `และ` = ทุกสาขาที่ยังไม่อัป PBM ได้ Total SKU = 0 ทันที · หมวด R01 ชนะทั้งสองข้อเสมอ · เก็บ `cat` เฉพาะแถว A/B/C — `{branch}_pm` มีเพดาน 1 MiB เหมือน `global_r05` และ `syncProductMasterToFirestore` ต้อง toast error เมื่อเขียนไม่ผ่าน ห้าม catch เงียบ · PBM มีผลกับตัวหารแล้ว ทุกจุดที่ PBM/R01 เปลี่ยนต้องรีคำนวณ **แม้ R05 ยังมาไม่ถึง** |

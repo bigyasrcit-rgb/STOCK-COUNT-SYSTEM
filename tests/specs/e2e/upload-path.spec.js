@@ -70,8 +70,8 @@ test.describe('CSV upload path', () => {
     expect(parsed.norm.systemQty).toBe(10);          // R01 col G
     expect(parsed.pricey.unitPrice).toBe(1500);
     expect(parsed.noPrice.unitPrice).toBeNull();     // blank price → null → must scan one by one
-    expect(parsed.neg.systemQty).toBe(0);            // pharmacy clamps negative to 0
-    expect(parsed.neg.negSys).toBeTruthy();
+    expect(parsed.neg.systemQty).toBe(-3);           // raw col G — negatives are no longer clamped (Aug 2026 r2)
+    expect(parsed.neg.negSys).toBeFalsy();           // the forced-audit flag is gone; the formula decides instead
     expect(parsed.delItem.isDel).toBe(true);         // in R01 but not in Product Branch Master
     expect(parsed.delItem.unitPrice).toBe(40);       // DEL still gets a price from R05
     expect(parsed.catA.isDel).toBe(false);           // Col D = 'A' stays in the catalog

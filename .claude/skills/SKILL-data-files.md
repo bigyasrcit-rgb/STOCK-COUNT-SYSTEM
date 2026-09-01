@@ -49,16 +49,21 @@ DEL/P items, Export Excel, Firestore persistence layers, หรือ Location m
 - **G = 0 ไม่ได้แปลว่า "ไม่ต้องนับ" เสมอไปแล้ว (ส.ค. 2026)** — `_countableSkus` = `G ≠ 0` **หรือ** PBM Col D ∈ `{A,B,C}`
   ยังต้องมีแถวใน R01 ถึงจะนับ · หมวด Col P ตัดออกได้เสมอ · **G ติดลบยังนับ** (คือการขายของขาด)
   G ยังเป็นตัวตัดสิน **pass/audit** ในสูตร Confirm ตามเดิมทุกอย่าง — เปลี่ยนแค่ "ต้องเดินไปนับไหม"
-  ⚠️ อ่าน G จาก `state.r01Data` ค่าดิบเท่านั้น — `skuMap.systemQty` ของสาขายา clamp `negSys` เป็น 0 ไปแล้ว แยก "G=0 จริง" กับ "G ติดลบ" ไม่ออก
+  ⚠️ อ่าน G จาก `state.r01Data` เท่านั้น — เป็นแหล่งความจริงเดียว · `skuMap.systemQty` เก็บค่าดิบเหมือนกันแล้วตั้งแต่เลิก clamp (ส.ค. 2026 รอบ 2) แต่ derive มาอีกทอดและยังไม่ถูกสร้างถ้า R05 มาไม่ถึง
 - **คอลัมน์ P = หมวดที่ไม่ใช่สินค้าคงคลัง → ไม่ต้องนับ (ส.ค. 2026)** — `_isNonCountR01Category()` ติดธง `nc:1` ตอน `loadR01`
   - ตัด: ขึ้นต้นด้วย **`11.`** (`R01_NON_COUNT_PREFIXES`) หรือมีคำว่า **`DELETE`** (`R01_NON_COUNT_KEYWORDS`) — เพิ่มหมวดใหม่เติม 2 array นี้ที่เดียว
   - เทียบเลขหมวดนำหน้า/คำสำคัญ **ไม่เทียบข้อความเต็ม** — ชื่อหมวดในไฟล์จริงมีช่องว่าง/วรรคตอนไม่คงที่
   - ⚠️ **เก็บแค่ธง `nc` ห้ามเก็บข้อความหมวดลง `r01Data`** — doc `{branch}_r01` มีเพดาน 1 MiB · ข้อความไทย ~45 ตัวอักษร × 5,400 แถว ≈ 750 KB ชนเพดานทันที
   - ตัดออกเฉพาะจาก `_countableSkus` เท่านั้น — SKU ยังอยู่ครบ: สแกนได้ · Confirm ได้ผลถูกต้อง · เห็นในรายการสินค้า
-  - ⚠️ `auto-r01/auto_r01_import.py` ยังไม่เขียนธง `nc` — ถ้าเปิดใช้ auto import ต้องเพิ่ม logic เดียวกัน ไม่งั้น SKU หมวดพวกนี้จะกลับมานับ
+  - `auto-r01/auto_r01_import.py` เขียนธง `nc` ด้วยกติกาเดียวกันแล้ว (ส.ค. 2026) — **แก้กติกาฝั่งใดฝั่งหนึ่งต้องแก้อีกฝั่งพร้อมกันเสมอ** (ตรวจ parity ได้ตาม `auto-r01/TODO-safe-enable.md`)
 - Re-upload: `state.r01Data = []` ก่อน → `rebuildMaps()` — scanData ของ SKU เดิมไม่ถูกรีเซ็ต
-- ⚠️ WH: อย่า re-upload R01 กลางรอบ / ในวันรีเช็ค (cross-day) — baseline จะเลื่อน
+- **WH ถูก auto import ทุกเช้าแล้ว (ส.ค. 2026)** — เดิมห้าม re-upload กลางรอบ ตอนนี้เป็นพฤติกรรมปกติที่ยอมรับแล้ว
+  ผลที่ตามมาและต้องรู้: **R16.104/103 ของ WH ถูก invalidate ทุกวัน** (`_loadWhR16CloudTimelines()` เช็ค `meta.r01Version !== state.r01Version` → `_clearWhR16Kind()`)
+  Supervisor ต้องอัป R16 ชุดใหม่ก่อน Confirm ทุกวัน · `systemQty` ขยับใต้รอบนับที่ค้างอยู่ → Recheck ตัดสินด้วยยอดวันใหม่
+  ถ้ารบกวนงานคลัง เอา `"WH"` ออกจาก `AUTO_BRANCHES` ในสคริปต์ (ไม่ต้องแตะ `index.html`)
 - **สาขายา (SRC/KKL/SSS): re-upload R01 ทุกวันได้ตั้งใจ** (baseline หลัง restock) — ดู "R01 Daily Reset" ด้านล่าง
+- ⚠️ **ห้ามอัปไฟล์ `Allstock.CSV` (รวมทุก branch) ผ่านหน้าเว็บ** — `loadR01` ไม่อ่าน Col D เลย และ `qtyMap.set()` ใน `_rebuildCountableSkus()`/`rebuildMaps()` เป็น last-wins
+  SKU unique 6,687 ตัวมี 5,373 ตัวโผล่ใน ≥2 branch → ทุกสาขาจะได้ยอดของ branch ท้ายไฟล์ · ให้ใช้ auto-r01 หรือไฟล์ export แยก branch เท่านั้น
 
 ### R01 Daily Baseline (สาขายา เท่านั้น — เปลี่ยนพฤติกรรม July 2026)
 
@@ -68,6 +73,18 @@ Re-upload R01 บน**สาขายา** (`_isPharmacyBranch()` → SRC/KKL/SS
 - item ที่นับก่อน baseline (`_isPreBaselineItem` — timestamp เก่ากว่า `_r01BaselineAt` เกิน `_R01_STALE_TOL_MS` 5 นาที) ถูก **freeze**: `reEvaluateAuditItems` ข้าม (audit ไม่ flip, pass เก่าคง pass ถาวร) และ `getPharmacistAuditEffectiveQty` คืน recheckQty ตรงๆ ไม่บวก R16
 - ไม่แตะ item ที่มี `auditor` (เภสัชยืนยันแล้ว = final) — เหมือนเดิม
 - **WH ไม่มีพฤติกรรมนี้** — ทุกจุด gate `_isPharmacyBranch()`
+
+**มี 2 เส้นทางที่ทำให้ baseline ขยับ — ลงเอยที่ `_applyR01BaselineUpdate()` เหมือนกัน:**
+
+| เส้นทาง | เขียน `r01BaselineAt` ที่ไหน | ใครอ่าน |
+|---|---|---|
+| อัพมือผ่านเว็บ | **session doc** (`syncToFirestore` พา `_r01BaselineAt` ลงไป) | 5 จุดเดิม: `startScanSessionListener` / `syncToFirestore` / `pullFromCloud` / `restoreFromFirestore` (+ v2 metadata sync) |
+| **ออโต้ (`auto-r01/`)** | **master doc `{branch}_r01`** | listener ของสาขายาใน `startWhMasterListeners()` → `_applyR01BaselineUpdate(mb, data)` |
+
+- สคริปต์ **แตะ session doc ไม่ได้** เพราะ `scanData` ฝังรวมอยู่ในก้อน `session_data_json` (schema v1) จึงพา baseline ผ่าน master doc แทน
+- ส่ง `data` (doc ที่ listener ได้มาแล้ว) เป็น param ที่ 2 เพื่อไม่ต้อง `.get()` ซ้ำ — doc ใหญ่ (SRC ~540 KB) การอ่านซ้ำคือ read เปล่า
+- `_adoptedMasterBaselineAt` จำค่าที่ adopt แล้วใน page session นี้ · **ห้ามลบ** — `startNewCount()` ตั้ง `_r01BaselineAt=''` ถ้าไม่มีตัวจำ listener จะ adopt ค่าเดิมซ้ำแล้ว toast หลอก + ล้าง R16 ฟรี
+- **WH ไม่ใช้เส้นทางนี้** — `_applyWhR01Doc()` adopt ด้วย `r01Version` อยู่แล้ว และ `_loadWhR16CloudTimelines()` ล้าง R16 ให้เองเมื่อ `meta.r01Version` ไม่ตรง
 
 **Cross-device sync:** `_r01BaselineAt` (module-level, ไม่ใช่ใน state) persist ใน `r01BaselineAt` field — ทุกเครื่องเช็ค `cloud.r01BaselineAt > local._r01BaselineAt` ใน `startScanSessionListener`/`syncToFirestore`/`pullFromCloud`/`restoreFromFirestore` → ถ้าใหม่กว่า เรียก `_applyR01BaselineUpdate()` โหลด R01 จาก `${branch}_r01` master doc + `_clearR16ForNewBaseline()` (นี่คือกลไกล้าง R16 ข้ามเครื่อง — จุด adopt R16 จาก session doc ทั้งหมด gate ด้วย `s.r16Loaded===true` เครื่องอื่นจึงไม่มีทาง "ล้างตาม" เอง) · เครื่องอัพ R01 เรียก `syncR16MetaToFirestore()` เขียน `r16Loaded:false` ลง `_r01` doc ด้วย
 

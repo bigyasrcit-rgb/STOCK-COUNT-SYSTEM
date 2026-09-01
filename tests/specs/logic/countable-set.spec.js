@@ -48,7 +48,7 @@ test('_isForceCountColD — เทียบเป๊ะเฉพาะ A/B/C/REV
 
 test('_countableSkus — ตาราง P1–P8: นับเมื่อ G ≠ 0 หรือ Col D เป็น A/B/C', async ({ browser }) => {
   const app = await bootBare(browser);
-  await app.page.evaluate(() => { currentBranch = 'SRC'; });   // สาขายา → negSys clamp ทำงาน
+  await app.page.evaluate(() => { currentBranch = 'SRC'; });   // สาขายา
 
   const r01 = [
     { colE: 'P1-ABC-STOCK', productName: 'A + มีของ', systemQty: 5 },
@@ -92,10 +92,16 @@ test('_countableSkus — ตาราง P1–P8: นับเมื่อ G ≠
   }));
   expect(kept).toEqual({ nocatZero: 0, nonCount: 5 });
 
-  // กับดัก negSys clamp: countable ต้องไม่ได้ตัดสินจาก skuMap.systemQty
-  const neg = await app.page.evaluate(() => state.skuMap.get('P9-ABC-NEG'));
-  expect(neg.systemQty).toBe(0);
-  expect(neg.negSys).toBeTruthy();
+  // ยอดระบบติดลบต้องไม่ถูกบีบเป็น 0 (เลิก clamp ส.ค. 2026 รอบ 2) และ _countableSkus ต้องอ่านค่าดิบจาก r01Data
+  // ค่าดิบเป็นตัวทำให้สูตร effectiveCnt===sys ตัดสินเคส "ค้างลูกค้า" ได้ถูก — ดู negsys-pass.spec.js
+  const neg = await app.page.evaluate(() => ({
+    inSkuMap: state.skuMap.get('P9-ABC-NEG')?.systemQty,
+    negSys: state.skuMap.get('P9-ABC-NEG')?.negSys,
+    raw: _rawSystemQty('P9-ABC-NEG'),
+  }));
+  expect(neg.inSkuMap).toBe(-3);
+  expect(neg.negSys).toBeFalsy();
+  expect(neg.raw).toBe(-3);
 
   await closeApp(app);
 });

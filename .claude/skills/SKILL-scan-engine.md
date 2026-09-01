@@ -75,10 +75,10 @@ location,SKU,qty
 
 ---
 
-## negSys — ระบบติดลบ (สาขายาเท่านั้น, July 2026)
+## ยอดระบบติดลบ (G < 0) — เลิก clamp แล้ว (ส.ค. 2026 รอบ 2)
 
-`rebuildMaps`: สาขายา (`_isPharmacyBranch()`) systemQty < 0 → clamp เป็น `0` + flag `skuMap[sku].negSys=true`
-(ข้อมูลดิบใน `r01Data` เก็บค่าติดลบจริง — WH ไม่ clamp เห็นค่าจริง)
+`rebuildMaps`: `_clampNeg=false` **ทุก branch** → `skuMap.systemQty` เก็บค่าติดลบดิบเหมือน `r01Data` · `negSys` เป็น `false` เสมอ
+(เดิมสาขายา clamp เป็น `0` + ธง `negSys` แล้วบังคับ audit ทุกตัว — ถอดออกแล้ว ดูเหตุผลด้านล่าง)
 
 **⚠️ กฎ "สแกนครั้งแรกนับ 0" (`_zeroSysFirstScan`) ถูกถอดออกหมดแล้ว (ส.ค. 2026) — ห้ามนำกลับมา**
 
@@ -92,19 +92,32 @@ location,SKU,qty
 - ⚠️ `zeroSysModal`/`showZeroSysModal`/`confirmZeroSys` = **dead code** (จงใจทิ้งไว้ ไม่ลบ) และ `_zeroSysHold` ยังเป็น hold state คู่กับ `_scanGapHold`
   — **ทุก guard ต้องเช็คทั้งคู่ ห้ามลบ**: `handleScanKey`, `handleScanInput`, `submitScanManual`, `processScan`, `drainQueue`, `resetScanRuntimeState`, `_loginModalOpen` (refocus list)
 
-**`negSys` → บังคับ `audit` เสมอ (ส.ค. 2026):**
-`_buildPendingScanEvaluation` เช็ค `si.negSys` **ก่อน** `effectiveCnt===sys`:
+**G ติดลบตัดสินด้วยสูตรปกติ — ไม่มีทางลัดแล้ว (ส.ค. 2026 รอบ 2):**
 ```js
-if(si.negSys){/* คง audit */}
+if(si.negSys){/* dead branch — negSys เป็น false เสมอ */}
 else if(effectiveCnt===sys){status='pass';…}
 else if(sd.noStock&&effectiveCnt===0&&sys>0){status='stock_adjustment';…}
 ```
-- ⚠️ **ลำดับสำคัญ** — `skuMap.systemQty` ของ negSys ถูก clamp เป็น 0 แล้ว ถ้าเช็คสูตร pass ก่อน สินค้าที่นับได้ 0 จะกลายเป็น `pass` เงียบๆ โดยไม่มีใครไปดูของจริง
-- เดิม negSys ที่ effectiveCnt ≠ 0 ลัดไป `stock_adjustment` ข้ามคิวเภสัช — **ห้ามย้อนกลับ**
+**ทำไมถึงถอดกฎ "บังคับ audit เสมอ" ออก:** สมมติฐาน *"ติดลบ = ข้อมูลผิดแน่นอน"* **ไม่จริง**
+เคสจริงของสาขายา: จ่ายของให้ลูกค้าเท่าที่มี แต่ R01 ของไม่พอ ยอดเลยติดลบ (ค้างลูกค้า) พอคลังส่งของมาเติมก็ถูกต้องแล้ว
+แต่ธง `negSys` บังคับ audit ทุกวันทั้งที่ไม่มีอะไรผิด · จากไฟล์จริงมี SRC 61 · KKL 16 · SSS 15 SKU ที่ติดลบ
+
+พอ `sys` เป็นค่าดิบ สูตรเดิมตัดสินได้ถูกเอง **โดยไม่ต้องแก้สูตร**:
+
+| สถานการณ์ | คำนวณ | ผล |
+|---|---|---|
+| `R01 −2` · คลังส่ง 5 · นับได้ 3 | `3 − 5 = −2 === −2` | ✅ **pass** — ของครบพอดี |
+| `R01 −2` · ไม่มีรับเข้า · นับ 0 | `0 ≠ −2` | ⚠️ **audit** — ติดลบที่อธิบายไม่ได้ |
+| `R01 −2` · คลังส่ง 5 · นับได้ 1 | `1 − 5 = −4 ≠ −2` | ⚠️ **audit** — ของหาย 2 |
+
+- ตัวคุมความปลอดภัยเปลี่ยนจาก "ธง `negSys`" เป็น **"สูตรต้องลงตัวพอดี"** ซึ่งเข้มกว่า เพราะต้องมีหลักฐาน R16 รับเข้ามายืนยัน
+- ⛔ **ห้ามนำ clamp กลับมา** — clamp ทำให้ `sys` เป็น 0 แล้ว "นับ 0" จะ pass เงียบๆ จนต้องมีธง `negSys` มากันอีกชั้น (วงจรเดิมที่เพิ่งถอดออก)
 - `reEvaluateAuditItems` ใช้กฎเดียวกัน (`si.negSys?'audit':…`) ต้องตรงกันเสมอ ไม่งั้นอัพ R16 ใหม่แล้วสถานะแกว่ง
 - ปลายทาง `stock_adjustment` ยังมาถึงได้ผ่าน Audit Verify เมื่อเภสัชยืนยันว่ายอดไม่ตรง
-- **กับดักที่ต้องรู้:** `skuMap.systemQty` แยก "G=0 จริง" กับ "G ติดลบ" ไม่ออก (clamp แล้ว) — ชุด `_countableSkus` จึงต้องอ่านจาก `state.r01Data` ค่าดิบเท่านั้น (ดู `rebuildMaps`)
-- ทดสอบล็อกไว้: `tests/specs/e2e/scan-behavior.spec.js` (ทั้ง zero และ negSys บวกปกติ), `confirm-count.spec.js` (S-ZERO และ S-NEG → audit)
+- ยอดจะลงตัวก็ต่อเมื่อ R16 บันทึกรับเข้า **ก่อนเวลาที่สแกน** (`getInboundQtyBefore`) — ข้อกำหนดเดิมของทุกรายการ ไม่ใช่ของใหม่
+- `_countableSkus` และ `_rawSystemQty()` ยังอ่านจาก `state.r01Data` เหมือนเดิม — ผูกกับแหล่งเดียว ถูกต้องแม้ `skuMap` ยังไม่ถูกสร้าง
+- ทดสอบล็อกไว้: `tests/specs/logic/negsys-pass.spec.js` (ตรึงทั้ง "อธิบายได้ → pass" และ **"อธิบายไม่ได้ → ต้อง audit"**),
+  `scan-behavior.spec.js` (ค่าติดลบไม่ถูก clamp · ทุกสแกนบวกปกติ), `confirm-count.spec.js` (S-NEG ไม่มีรับเข้า → audit)
 
 ## noStock — ไม่มีของจริง ระบบมีสต็อค (สาขายาเท่านั้น, July 2026)
 

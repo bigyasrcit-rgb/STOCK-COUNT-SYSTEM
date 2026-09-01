@@ -1200,6 +1200,9 @@ let _whResultTab = 'result'; // WH PDA warehouse: 'result'=เริ่มนั
 let _whSupFilter = 'all'; // WH supervisor Desktop: filter ตาราง RESULT ตาม status (all/scanning/pass/audit/stock_adjustment)
 let _countResetAt = ''; // timestamp ล่าสุดที่ startNewCount ถูกเรียก — ใช้ detect reset จากเครื่องอื่น
 let _r01BaselineAt = ''; // ISO timestamp ล่าสุดที่อัพ R01 (สาขายา) — sync ข้ามเครื่องเพื่อรีเซ็ต Audit
+// baseline ที่ adopt มาจาก master doc {branch}_r01 (เส้นทาง auto-r01) แล้วใน page session นี้
+// จำเป็นเพราะ startNewCount() ตั้ง _r01BaselineAt='' → ถ้าไม่จำไว้ listener จะ adopt ค่าเดิมซ้ำแล้ว toast หลอก + ล้าง R16 ฟรี
+let _adoptedMasterBaselineAt = '';
 function _isPharmacyBranch(){return currentBranch==='SRC'||currentBranch==='KKL'||currentBranch==='SSS';}
 function initFirebase(){if(!firebase.apps.length)firebase.initializeApp(FIREBASE_CONFIG);_db=firebase.firestore();}
 function getSessionId(){return currentBranch;}
@@ -1817,6 +1820,9 @@ function stopWhMasterListeners(){
   if(_whR16104MetaUnsubscribe){_whR16104MetaUnsubscribe();_whR16104MetaUnsubscribe=null;}
   if(_whR16103MetaUnsubscribe){_whR16103MetaUnsubscribe();_whR16103MetaUnsubscribe=null;}
   clearTimeout(_whR16MetaReloadTimer);_whR16MetaReloadTimer=null;++_whR16CloudLoadToken;_whR16TimelineLoading=false;
+  // ล้างตัวจำ baseline ตอนเปลี่ยนสาขา/ผูก listener ใหม่ — ตอนนั้น _r01BaselineAt ถูกโหลดจาก session แล้วจึงกันซ้ำได้เอง
+  // startNewCount() ไม่ restart listener ชุดนี้ ตัวจำจึงอยู่ครบตามที่ต้องการ
+  _adoptedMasterBaselineAt='';
 }
 function _parseR01RowsFromDocData(data){
   if(!data?.data_json)return[];
@@ -1855,6 +1861,15 @@ function startWhMasterListeners(){
     _whMasterUnsubscribe=_db.collection('stock_sessions').doc(getSessionId()+'_r01').onSnapshot(doc=>{
       if(!doc.exists){document.getElementById('badgeR01').textContent='ยังไม่โหลด';_setR01Ts('');return;}
       const data=doc.data()||{};if(data.data_json)document.getElementById('badgeR01').textContent='Ready';const uploadedAt=_r01UploadedAtFromDocData(data);if(uploadedAt)_setR01Ts(uploadedAt);
+      // เส้นทาง auto-r01: สคริปต์เขียน r01BaselineAt ลง master doc (แตะ session doc ไม่ได้ — scanData ฝังอยู่ใน blob v1)
+      // เว็บไม่เคยเขียน field นี้ → undefined = no-op ทุกกรณีที่ยังอัพ R01 ด้วยมือ
+      // _applyR01BaselineUpdate() ทำครบในตัวแล้ว: โหลด R01 + rebuildMaps + _clearR16ForNewBaseline + toast
+      // หลัง adopt แล้ว syncToFirestore() จะพา _r01BaselineAt ลง session doc ให้เครื่องอื่นต่อผ่านเส้นทางเดิม
+      const mb=data.r01BaselineAt||'';
+      if(mb&&mb>(_r01BaselineAt||'')&&mb!==_adoptedMasterBaselineAt){
+        _adoptedMasterBaselineAt=mb;
+        _applyR01BaselineUpdate(mb,data).catch(e=>console.warn('[R01 master baseline]',e.message));
+      }
     },e=>console.warn('[R01 meta listener]',e.message));
     return;
   }
@@ -3289,10 +3304,18 @@ function scrubStaleLocalAudits(){
   return n;
 }
 // resetUnverifiedAuditForNewR01 ถูกลบ (July 2026) — flow ใหม่: audit ที่ยังไม่ verify อยู่รอดข้ามการอัพ R01 ให้เภสัชรีเช็ค (ดู _isPreBaselineItem)
-async function _applyR01BaselineUpdate(baselineAt){
+// docData = ข้อมูล {branch}_r01 ที่ caller มีอยู่แล้ว (listener ได้มาจาก snapshot) — ส่งมาเพื่อไม่ต้อง .get() ซ้ำ
+// doc นี้ใหญ่ (SRC ~540 KB) การอ่านซ้ำคือ 1 read เปล่าต่อเครื่องต่อวัน · caller ที่ไม่ส่งมายังทำงานเหมือนเดิมทุกประการ
+async function _applyR01BaselineUpdate(baselineAt,docData=null){
   if(!_isPharmacyBranch()||!baselineAt||baselineAt<=(_r01BaselineAt||''))return 0;
   _r01BaselineAt=baselineAt;
-  if(_db&&currentBranch){
+  if(docData&&docData.data_json){
+    try{
+      state.r01Data=JSON.parse(docData.data_json);state.r01Version=docData.r01Version||'';
+      document.getElementById('badgeR01').textContent='Ready';
+      {const uploadedAt=_r01UploadedAtFromDocData(docData);if(uploadedAt)_setR01Ts(uploadedAt);}
+    }catch(e){console.warn('[R01 baseline snapshot]',e.message);}
+  }else if(_db&&currentBranch){
     try{
       const r01Doc=await _db.collection('stock_sessions').doc(getSessionId()+'_r01').get();
       if(r01Doc.exists&&r01Doc.data().data_json){
@@ -3322,7 +3345,8 @@ async function reEvaluateAuditItems(opts={}){
     const inboundQty=getInboundQtyBefore(sku,sd.timestamp);
     const r16103Qty=getR16103QtyBefore(sku,sd.timestamp);
     const effectiveCnt=sd.countedQty+soldQty+r16103Qty-inboundQty;
-    // negSys บังคับเป็น audit เสมอ (ต้องตรงกับ _buildPendingScanEvaluation ไม่งั้นอัพ R16 ใหม่แล้วสถานะแกว่ง)
+    // negSys เป็น false เสมอแล้ว (เลิก clamp — ดู rebuildMaps) เหลือไว้ให้ตรงกับ _buildPendingScanEvaluation
+    // ต้องตรงกันเป๊ะทั้งสองจุด ไม่งั้นอัพ R16 ใหม่แล้วสถานะแกว่งไปมา
     const newStatus=si.negSys?'audit':(effectiveCnt===si.systemQty?'pass':'audit');
     if(newStatus===sd.status)continue; // ไม่เปลี่ยน ข้ามไป
     const before={...sd};sd.status=newStatus;
@@ -3924,8 +3948,17 @@ function rebuildMaps() {
   _rebuildCountableSkus();
   if(!state.r05Data.length)return;
   const skuSource=state.productMasterData.length?state.productMasterData:state.r01Data.map(r=>({sku:r.colE,productName:r.productName}));
-  // สาขายา: systemQty ติดลบ → มองเป็น 0 + flag negSys (Confirm แล้วเข้า stock_adjustment ตรง ไม่รอเภสัช verify) — WH เก็บค่าติดลบจริง
-  const _clampNeg=_isPharmacyBranch();
+  // ── ทุก branch เก็บ systemQty เป็นค่าดิบจาก R01 รวมค่าติดลบ (ส.ค. 2026 รอบ 2) ──
+  // เดิมสาขายา clamp ค่าติดลบเป็น 0 + ติดธง negSys แล้วบังคับเข้า audit เสมอ บนสมมติฐานว่า "ติดลบ = ข้อมูลผิดแน่นอน"
+  // ⛔ สมมติฐานนั้นไม่จริง — เคสที่พบจริง: จ่ายของให้ลูกค้าเท่าที่มี แต่ R01 ของไม่พอ ยอดเลยติดลบ (ค้างลูกค้า)
+  //    พอคลังส่งของมาเติม ของบนชั้นถูกต้องแล้ว แต่ระบบยัง audit ทุกวันเพราะธง negSys ทั้งที่ไม่มีอะไรผิด
+  //    ตัวอย่าง: R01=-2 · คลังส่ง 5 (R16 inbound) · นับได้ 3 → effectiveCnt = 3-5 = -2 === sys(-2) → pass ถูกต้อง
+  // clamp คือสิ่งเดียวที่ขวางอยู่ — พอเก็บค่าดิบ สูตร `effectiveCnt === sys` เดิมก็ตัดสินได้ถูกเองโดยไม่ต้องแก้สูตร
+  // ⚠️ ห้ามนำ clamp กลับมา: มันทำให้ sys เป็น 0 แล้ว "นับ 0" จะ pass เงียบๆ จนต้องมีธง negSys มากันอีกชั้น
+  //    ตัวคุมความปลอดภัยตอนนี้คือ "สูตรต้องลงตัวพอดี" ซึ่งเข้มกว่า เพราะติดลบที่ R16 อธิบายไม่ได้จะไม่ผ่าน
+  //    (R01=-2 · ไม่มีรับเข้า · นับ 0 → 0 ≠ -2 → audit ตามเดิม)
+  // เก็บ field `negSys` ไว้ (ค่าเป็น false เสมอ) — showZeroSysModal ยังอ่านอยู่ และเป็น dead code ที่ห้ามลบ
+  const _clampNeg=false;
   skuSource.forEach(r=>{if(!state.skuMap.has(r.sku)){const pn=r.productName||r01NameMap.get(r.sku)||r.sku;const q0=qtyMap.get(r.sku)??0;const neg=_clampNeg&&q0<0;state.skuMap.set(r.sku,{sku:r.sku,productName:pn,unitPrice:_parseProductMasterPrice(r.unitPrice),systemQty:neg?0:q0,negSys:neg,barcodes:[],isDel:false});}});
   // R01 items not in Product Branch Master → DEL (ถูกตัดออกจาก PBM แต่ยังมีสต็อกจริง)
   // รวม SKU ที่ Col D=D/P ซึ่งถูกกรองออกตั้งแต่ตอน parse — ยังสแกน/Confirm/เข้าใบปรับสต็อกได้ตามปกติ
@@ -5237,9 +5270,11 @@ function _buildPendingScanEvaluation(sku,sd){
   const r16103Qty=getR16103QtyBefore(sku,sd.timestamp);
   const effectiveCnt=cnt+soldQty+r16103Qty-inboundQty;
   let status='audit';let auditStatus='pending';
-  // negSys (ยอดระบบติดลบ) = ข้อมูลสต็อกผิดแน่นอน — **บังคับเข้า audit เสมอ ไม่ว่านับได้เท่าไร** (ส.ค. 2026)
-  // ต้องเช็คก่อนสูตร pass เพราะ systemQty ถูก clamp เป็น 0 แล้ว → นับ 0 จะกลายเป็น pass โดยไม่มีใครไปดูของจริง
-  // เดิม negSys ที่นับได้ ≠ 0 ลัดไป stock_adjustment เลย — ตัดสินปรับสต็อกโดยไม่ให้เภสัชตรวจชั้นก่อน
+  // [dead branch ตั้งแต่ ส.ค. 2026 รอบ 2] negSys เป็น false เสมอแล้วเพราะเลิก clamp ค่าติดลบ (ดู rebuildMaps)
+  // เดิมบังคับ audit ทุกตัวที่ยอดระบบติดลบ บนสมมติฐาน "ติดลบ = ข้อมูลผิดแน่นอน" ซึ่งไม่จริง —
+  // ติดลบจากการค้างของลูกค้าเป็นสถานะปกติ และสูตรด้านล่างตัดสินได้ถูกเองเมื่อ sys เป็นค่าดิบ:
+  //   ติดลบที่ R16 รับเข้าอธิบายได้พอดี → pass · อธิบายไม่ได้ → ตกไป audit ตามปกติ
+  // เก็บ branch ไว้กัน snapshot เก่าที่ยังมี negSys:true ค้างในเครื่อง — ห้ามใช้เป็นที่ใส่กฎใหม่
   if(si.negSys){/* คง audit */}
   else if(effectiveCnt===sys){status='pass';auditStatus='approved';}
   else if(sd.noStock&&effectiveCnt===0&&sys>0){status='stock_adjustment';auditStatus='stock_adjustment';}
@@ -6164,9 +6199,20 @@ async function restoreMasterFromFirestore(force=false){
         if(old.exists){const s=old.data().session_data;if(s&&s.r01Data?.length){state.r01Data=s.r01Data;document.getElementById('badgeR01').textContent='Ready';}if(s&&s.r05Data?.length){state.r05Data=s.r05Data;document.getElementById('badgeR05').textContent='Ready';}}
       }
     } else {
-      // มี local data แล้ว — อ่านแค่ timestamp จาก _r01 doc (ไม่โหลด data_json)
+      // มี local data แล้ว — ปกติอ่านแค่ timestamp จาก _r01 doc (ไม่โหลด data_json)
+      // ⚠️ แต่ถ้า r01Version บน cloud ต่างจากในเครื่อง ต้องโหลด data_json ด้วย
+      // เดิม adopt r01Version ใหม่โดยไม่ adopt ข้อมูล → เครื่องรายงาน version วันนี้แต่คำนวณด้วย systemQty เมื่อวาน
+      // (เห็นชัดตอนเปิดใช้ auto-r01 ซึ่งอัพ R01 ทุกเช้าโดยไม่มีใครกดอัพที่เครื่องนี้)
       const r01Doc=await _db.collection('stock_sessions').doc(id+'_r01').get();
-      if(r01Doc.exists){state.r01Version=r01Doc.data().r01Version||state.r01Version||'';const uploadedAt=_r01UploadedAtFromDocData(r01Doc.data());if(uploadedAt)_setR01Ts(uploadedAt);_applyR16MetaFromDoc(r01Doc.data());}
+      if(r01Doc.exists){
+        const d=r01Doc.data();const cloudVersion=d.r01Version||'';
+        if(cloudVersion&&cloudVersion!==(state.r01Version||'')&&d.data_json){
+          state.r01Data=JSON.parse(d.data_json);state.r01Version=cloudVersion;
+          document.getElementById('badgeR01').textContent='Ready';
+          if(state.r05Data.length)rebuildMaps(); else {_rebuildCountableSkus();updateStats();}
+        }else state.r01Version=cloudVersion||state.r01Version||'';
+        const uploadedAt=_r01UploadedAtFromDocData(d);if(uploadedAt)_setR01Ts(uploadedAt);_applyR16MetaFromDoc(d);
+      }
     }
   }catch(e){console.warn('Firestore master restore:',e.message);}
   // Product Branch Master badge/meta: ดึงจาก {branch}_pm ของสาขานี้
