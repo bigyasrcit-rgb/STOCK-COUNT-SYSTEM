@@ -91,6 +91,12 @@ Re-upload R01 บน**สาขายา** (`_isPharmacyBranch()` → SRC/KKL/SS
 ⚠️ อย่าสับสนกับ **R05.105** ซึ่งเป็นไฟล์ราคาคนละตัว (ใช้แนบในใบปรับปรุงสต็อก: ColB=SKU, ColE=หน่วย, ColH=ราคา, กรอง ColF===4)
 
 - ราคาว่าง/อ่านไม่ออก → `null` = ต้องสแกนทีละชิ้น (fail-safe) · แถวที่ไม่มี Barcode หรือ SKU ถูกข้ามเหมือนเดิม
+- **ข้อยกเว้นเดียวของกฎราคา (ส.ค. 2026): สินค้าที่ระบบว่าง `G ≤ 0` กรอกได้แม้ราคา ≥ 1,000 หรือไม่มีราคา — แต่รับเฉพาะค่า `0`**
+  - จำเป็นเพราะกติกา A/B/C ดึง `G=0` เข้าตัวหาร Progress แต่ "ชั้นว่างจริง" คือเคสปกติของกลุ่มนี้ → สแกนไม่ได้ (ไม่มีของให้ยิง) และปุ่ม 🚫 ติดเงื่อนไข `systemQty>0` → ค้าง `pending` ถาวร
+  - ไม่ขัดเจตนากฎเดิม: กฎกันการ "พิมพ์เลขผิดแล้วยอดพอง" ซึ่งการกรอก `0` ทำไม่ได้ · ของแพงที่มีของจริงบนชั้นยังต้องสแกนทีละชิ้น
+  - `_canEnterZeroOnly()` = เงื่อนไขแสดงช่อง · `_canEnterCountQtyValue()` = เงื่อนไขรับค่า — **แก้พร้อมกันเสมอทั้ง 5 จุด** (`renderScanList`, `patchScanRow`, `updateInlineQty`, `updatePopupQty`, `renderPopupTable`)
+  - ⚠️ อ่าน G ผ่าน `_rawSystemQty()` (map `_r01RawQty` จาก `_rebuildCountableSkus()`) **ห้ามใช้ `skuMap.systemQty`** — สาขายา clamp `negSys` เป็น 0 แล้ว แยก "G=0 จริง" กับ "G ติดลบ" ไม่ออก
+  - รายละเอียดเต็ม + ปุ่ม `📦 ค้างส่ง` ที่คู่กัน: ดู `CLAUDE.md` §กฎราคา และ §Status Lifecycle
 - `rebuildMaps()` เก็บราคาไว้ทั้งสองระดับ: ต่อบาร์โค้ดใน `skuMap.barcodes[].unitPrice` (ใช้ตอนสแกน) และต่อรายการใน `skuMap.unitPrice` ที่ `_baseUnitPrice()` เลือกจากบาร์โค้ดตัวคูณต่ำสุด (ใช้คุมช่อง QTY)
 - `global_r05` เป็น doc กลางใช้ร่วมทุกสาขา มีเพดาน 1 MiB — toast ตอนอัปโหลดโชว์ขนาดจริงและเตือนที่ 800 KB
 - **เก็บบน cloud เป็น array-of-arrays** `[[barcode,SKU,unitName,mult,price],...]` (`format:'r05a1'`) — object form ที่ 10,619 บาร์โค้ด = 1,069 KB **เกินเพดานจริง** เขียน/อ่านผ่าน `_serializeR05()` / `_parseR05Json()` เท่านั้น (parser ยังรองรับ object form เดิม)

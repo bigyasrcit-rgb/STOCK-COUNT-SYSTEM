@@ -1,7 +1,20 @@
 // Shared test entry: re-exports Playwright's test/expect plus closeApp() which
 // enforces the isolation tripwire on every context created via newAppContext().
-const { test, expect } = require('@playwright/test');
-const { newAppContext, armDialog, waitForAppReady, waitForCatalog } = require('./boot');
+const { test: base, expect } = require('@playwright/test');
+const { newAppContext, armDialog, waitForAppReady, waitForCatalog, closeAllContexts } = require('./boot');
+
+// เก็บกวาด browser context ที่ค้างหลังทุกเทส ไม่ว่าผ่านหรือล้ม
+// เทสที่ล้มก่อนถึง closeApp() จะทิ้ง context ไว้จนจบ worker — เป็นการรั่วของทรัพยากรจริง
+// ⚠️ ไม่ใช่ตัวแก้เทส flaky: ทดลองแล้ว (เทสล้มจงใจ → เทสถัดไป) พบว่าเทสถัดไปผ่านทั้งเปิดและปิด fixture นี้
+//    สาเหตุ flaky ของ wh-workflow-rules.spec.js:157 ยังไม่ทราบ — ดู tests/README.md
+// ต้องเป็น fixture ไม่ใช่ test.afterEach — hooks.js ถูก require ครั้งเดียวแล้ว cache ไว้
+// afterEach จึงจะผูกกับ spec ไฟล์แรกที่ require เท่านั้น ส่วน fixture ครอบทุกไฟล์ที่ใช้ test ตัวนี้
+const test = base.extend({
+  _closeLeakedContexts: [async ({}, use) => {
+    await use();
+    await closeAllContexts();
+  }, { auto: true }],
+});
 
 // Bare page for pure-logic evaluate() tests — no login, Firestore on a dead port (fail-closed).
 async function bootBare(browser) {

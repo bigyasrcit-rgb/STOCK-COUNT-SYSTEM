@@ -5,6 +5,15 @@
 // login:false lands on the branch selector — enough for pure-logic evaluate() tests.
 const { installShim } = require('./routes');
 
+// เทสที่ล้มกลางทางจะไม่ได้เรียก closeApp() → context ค้างรันต่อและยังคุย emulator ตัวเดียวกับเทสถัดไป
+// (startNewCount ของหน้าที่ค้างลบ WH_*_confirmations ทิ้ง ทำให้เทสถัดไปล้มตามเป็นลูกโซ่)
+// ทะเบียนนี้ให้ auto-fixture ใน hooks.js เก็บกวาดหลังทุกเทส ไม่ว่าผ่านหรือล้ม
+const _openContexts = new Set();
+async function closeAllContexts() {
+  for (const c of [..._openContexts]) await c.close().catch(() => {});
+  _openContexts.clear();
+}
+
 const BASE_URL = 'http://127.0.0.1:4173';
 const PDA_UA = 'Mozilla/5.0 (Linux; Android 10; PDA) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 StockCountPDA/1.11';
 
@@ -28,6 +37,8 @@ async function newAppContext(browser, opts = {}) {
     // static-server.mjs sees this header and injects the emulator shim into index.html
     extraHTTPHeaders: { 'x-test-shim': `${projectId}:${firestorePort}` },
   });
+  _openContexts.add(context);
+  context.on('close', () => _openContexts.delete(context));
   await installShim(context, { projectId, firestorePort, violations });
 
   if (login) {
@@ -76,4 +87,4 @@ async function waitForCatalog(page, { minSkus = 1, timeout = 20000 } = {}) {
   );
 }
 
-module.exports = { newAppContext, armDialog, waitForAppReady, waitForCatalog, BASE_URL };
+module.exports = { newAppContext, armDialog, waitForAppReady, waitForCatalog, closeAllContexts, BASE_URL };
