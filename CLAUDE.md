@@ -178,6 +178,13 @@ state = {
 - **สแกน `barcode,qty`** ใช้ราคาของ**บาร์โค้ดที่ยิงจริง** (`_canEnterCountQtyPrice(scanPrice)` ใน `handleBarcode`) → บาร์โค้ดกล่องแพงถูกบล็อกได้ แม้บาร์โค้ดเม็ดของ SKU เดียวกันจะกรอกได้ · สแกน SKU ตรง (`skuDirectMap`) ใช้ราคาหน่วยเล็กสุด
 - **ช่อง QTY ใน RESULT row / stock popup** ผูกกับรายการไม่ใช่บาร์โค้ด → ใช้ `skuMap.unitPrice` ที่ `_baseUnitPrice()` derive มาจาก **บาร์โค้ดตัวคูณต่ำสุด**; ตัวคูณเท่ากันหลายอันเลือกราคาสูงสุด และถ้ามีตัวใดไม่มีราคา → `null` (บังคับสแกนทีละชิ้น)
 - `< 1000` เท่านั้นที่แสดงและยอมรับช่อง QTY แบบยอดรวมหน่วยย่อย (absolute); `>= 1000`, ค่าว่าง/อ่านไม่ได้, Unknown, หรือบาร์โค้ดที่ไม่มีใน R05 ต้องสแกนทีละชิ้น
+- **ข้อยกเว้นเดียวของกฎราคา (ส.ค. 2026): สินค้าที่ระบบว่าง `G ≤ 0` กรอกได้แม้ติดกฎราคา แต่รับเฉพาะค่า `0`**
+  - จำเป็นเพราะกติกา A/B/C ดึงสินค้า `G=0` เข้าตัวหาร Progress แต่ "ชั้นว่างจริง" คือเคสปกติของกลุ่มนี้ → สแกนไม่ได้ (ไม่มีของให้ยิง) และปุ่ม 🚫 ติดเงื่อนไข `systemQty>0` → **ค้าง `pending` ถาวร Progress ไม่มีวันถึง 100%**
+  - ไม่ขัดเจตนากฎเดิม: กฎมีไว้กัน "พิมพ์เลขผิดแล้วยอดพอง" ซึ่งการกรอก `0` ทำไม่ได้ · ของแพงที่มีของจริงบนชั้นยังต้องสแกนทีละชิ้นเหมือนเดิม (กรอกเลขอื่นยังถูกปฏิเสธ)
+  - `_canEnterZeroOnly()` = เงื่อนไขแสดงช่อง · `_canEnterCountQtyValue(skuInfo,v)` = เงื่อนไขรับค่า — **ทั้งคู่ต้องแก้พร้อมกันเสมอ** ทั้ง 5 จุด (`renderScanList`, `patchScanRow`, `updateInlineQty`, `updatePopupQty`, `renderPopupTable`)
+  - ⚠️ **ต้องอ่าน G ดิบผ่าน `_rawSystemQty()`** (map `_r01RawQty` สร้างคู่กับ `_countableSkus` ใน `_rebuildCountableSkus()`) **ห้ามอ่าน `skuMap.systemQty`** — สาขายา clamp `negSys` เป็น 0 ไปแล้ว จะแยก "G=0 จริง" กับ "G ติดลบ" ไม่ออก
+  - ครอบทั้ง WH และสาขายา · `G<0` (negSys) เข้าข่ายด้วย
+  - เทสตรึงไว้ที่ `tests/specs/logic/zero-qty-gate.spec.js` (ตรึงทั้ง "0 ต้องผ่าน" และ "ค่าอื่นต้องไม่ผ่าน")
 - **DEL กรอกได้แล้วถ้าบาร์โค้ดมีราคา < 1000** (เปลี่ยนจากเดิมที่บล็อกทุกกรณี — `_canEnterCountQty` ไม่เช็ค `isDel` อีกต่อไป)
 - กฎราคาต้องครอบทั้ง RESULT row, stock popup, `barcode,qty` และฟังก์ชันแก้จำนวน — **จุดที่ตัดสินใจว่า "แสดงช่อง input หรือไม่" (`renderScanList`, `patchScanRow`) ต้องใช้กฎเดียวกับจุดที่ตรวจ** ไม่งั้นช่องจะโผล่ให้พิมพ์แล้วค่อยเด้งปฏิเสธ; ห้ามนำ threshold จาก `systemQty` กลับมา
 - กฎนี้ไม่ใช้กับ Audit/Recheck และไม่เปลี่ยน `unitMultiplier` ของการสแกน Barcode ปกติ
@@ -217,6 +224,21 @@ pending → scanning → pass
 - **ยอดรีเช็ค 0 รองรับแล้ว** (`updatePharmacyRecheckQty` + `getPharmacistAuditPendingMap`) = "เภสัชดูแล้วไม่มีของ" ต่างจาก "ยังไม่รีเช็ค" (`recheckQty == null`)
   จำเป็นเพราะ negSys ส่วนใหญ่ไม่มีของจริง ถ้ากรอก 0 ไม่ได้จะค้าง audit ถาวร · ผลตัดสินใช้สูตรเดิม (เทียบกับ `recheckSystemQty` ที่ freeze ไว้)
 `noStock` = สาขายาเท่านั้น: ระบบมี stock แต่ผู้ช่วยยืนยันว่าไม่มีของจริง → Confirm เป็น `stock_adjustment` ตามกติกาปัจจุบัน
+`backorder` = **สาขายาเท่านั้น: เภสัชมาร์คว่า "ค้างส่งลูกค้า" (ส.ค. 2026)** — เคสกลับด้านของ `noStock`
+- ปุ่ม `📦 ค้างส่ง` ในป็อปอัพ Audit Verify · `_canMarkBackorder()` เปิดเฉพาะ `status==='audit'` + ยังไม่มี `auditor` + role เภสัช + **`_rawSystemQty(sku) <= 0`**
+- **ทำไมต้องมี:** ยอดติดลบเกิดเพราะการขายถูกบันทึกแล้วแต่ของยังไม่เข้า = เป็นหนี้ลูกค้าอยู่จริง
+  ถ้าออกใบปรับสต็อกดันยอดกลับเป็น 0 = ลบร่องรอยหนี้ แล้วส่วนต่างไปโผล่ใหม่ตอนของเข้า
+  (`ปรับเป็น 0` → คลังส่ง 5 → ระบบ 5 · ของจริง 5 → จ่ายของค้าง 2 ที่ขายไปแล้ว → ระบบ 5 · ของจริง 3 = **เพี้ยน**)
+- **เดินรางเดียวกับ "รีเช็คได้ 0" ทุกประการ** — `markBackorderItem()` ตั้ง `recheckQty=0` + `recheckBy/At` + `_freezeRecheckBaseline()` แล้วเติมธง `backorder:true`
+  จึงเข้าคิว `getPharmacistAuditPendingMap()` เองโดยไม่ต้องแก้ · **ไม่บันทึกจำนวนปลอม** — 0 คือของจริงบนชั้น ธงบอกว่า "ว่างเพราะค้างส่ง ไม่ใช่ของหาย"
+- `confirmAuditVerifyItem()` เช็ค `sd.backorder` **ก่อนสูตร** → `pass` และไม่เข้าใบปรับสต็อก
+- **กด PDA ได้ แต่ pass จริงตอน Confirm บน Desktop** — ตรงกับรูปแบบเดิม "PDA มาร์ค → Desktop ยืนยัน" (ปุ่ม Confirm ยัง guard `_isPdaApp()`)
+- ⚠️ **ธงต้องเดินทางครบทุก path** — marker payload, `_applyPharmacyAuditMarkersToState` (ตั้ง/ล้าง), audit log, `resetRecheckItem`, `reopenPharmacyAudit`, `_addRecheckScanQty` (สแกนทับ = ถอนธง), reset ข้ามรอบ
+  `_scanItemPayload`/`_scanItemFingerprint` พาไปเองเพราะวนทุก field ที่ไม่ใช่ `SCAN_ITEM_LOCAL_FIELDS`
+- ⚠️ **`_sameBranchRecheck()` ต้องเทียบ `backorder`** — ธงพลิกผลตัดสิน ถ้าไม่เทียบ คนกดปุ่มกลางงาน Confirm จะไม่ถูกจับว่าเปลี่ยน
+- **ข้อจำกัดที่ยอมรับแล้ว:** ไม่ได้แก้ R01 → พรุ่งนี้ยอดยังติดลบ เข้า audit ใหม่ ต้องกดอีก จนของเข้าจริง
+  และถ้าเภสัชกดกับของที่หายจริง ยอดจะไม่มีวันถูกแก้ — ร่องรอยมีแค่ `auditor` + `backorder` ใน Audit Log
+- เทสตรึงไว้ที่ `tests/specs/logic/backorder-mark.spec.js`
 
 สูตร Confirm รอบแรกห้ามเปลี่ยนโดยพลการ:
 

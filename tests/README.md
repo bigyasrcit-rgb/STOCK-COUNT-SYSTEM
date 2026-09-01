@@ -97,3 +97,6 @@ canonical hash และ rules ป้องกัน stale PDA/legacy final map
 - **`bootFreshCount`/`bootJoinCount` ต้องผ่าน `restoreMastersUntilReady`** ห้ามเรียก `restoreMasterFromFirestore` ตรงๆ แล้วเชื่อว่า catalog พร้อม มีสองกับดักที่เจอมาแล้ว:
   1. `startNewCount()` ลบ `{branch}_r01` ผ่าน SDK ของหน้านั้น → cache จำว่า doc ถูกลบ พอ seed ด้วย admin แล้ว `.get()` ยังคืนค่า cache เก่า → `r01Data` ว่างถาวร (ต้อง retry)
   2. `skuMap` ถูก derive โดยไฟล์ที่โหลดเสร็จทีหลัง อาจถูกสร้างจาก PM ล้วน → **`systemQty` เป็น 0 ทุกตัว** เทสจะผ่านแบบผิดๆ หรือล้มงงๆ (ต้อง `rebuildMaps()` + ตรวจ canary `S-NORM.systemQty===10`)
+  3. **กับดักเดียวกันนี้ยังไม่ถูกปิดใน `wh-workflow-rules.spec.js:157`** (`legacy WH final documents are read/delete-only`) — `startNewCount()` ที่ [index.html:3453](../index.html#L3453) ลบ `WH_count_confirmations`/`WH_recheck_confirmations` ผ่าน `Promise.all` ของหน้านั้น
+     ถ้าเทส seed doc กลับด้วย admin ก่อน delete ชุดนั้น commit เสร็จ → delete มาถึงทีหลังแล้วลบทับ → `recheckRead:false` (ตัวสุดท้ายใน `Promise.all` จึงโดนบ่อยสุด)
+     **เป็นเทสที่ flaky อยู่แล้วก่อนหน้านี้ ไม่ใช่บั๊กของ production** — วัดแล้วล้ม 2/3 รอบบน `index.html` ที่ยังไม่แก้อะไร · ถ้าจะปิดต้องรอ delete settle หลัง boot ก่อน seed

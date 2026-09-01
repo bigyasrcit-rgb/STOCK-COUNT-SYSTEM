@@ -109,6 +109,9 @@ else if(sd.noStock&&effectiveCnt===0&&sys>0){status='stock_adjustment';…}
 ## noStock — ไม่มีของจริง ระบบมีสต็อค (สาขายาเท่านั้น, July 2026)
 
 เคสกลับด้านของ negSys: systemQty > 0 แต่ชั้นว่าง (สแกนไม่ได้ พิมพ์ `,0` บน PDA ไม่ได้)
+
+> คู่ตรงข้ามอีกด้าน: **`backorder`** = ระบบไม่มีของ (`G ≤ 0`) แต่เป็นหนี้ลูกค้าจริง → เภสัชกดปุ่ม `📦 ค้างส่ง` ปิดงานเป็น `pass`
+> โดยไม่ออกใบปรับสต็อก · เดินรางเดียวกับ "รีเช็คได้ 0" + ธง `backorder` · ดู CLAUDE.md §Status Lifecycle
 ปุ่ม **🚫 นับ 0** ในป็อปอัพสต็อค (gate: `_isPharmacyBranch() && currentRole==='assistant' && status==='pending' && systemQty>0`)
 → `showNoStockModal(sku)` → `confirmNoStock()` — **popup path ไม่ใช่ scan path** (pattern เดียวกับ `updatePopupQty` ไม่แตะ `_zeroSysHold`/`drainQueue`):
 - เซ็ต `countedQty=0, status='scanning', noStock=true, scannedBy, timestamp/firstScanAt` + `scanListMap.set` ตรงๆ → ขึ้น RESULT qty 0

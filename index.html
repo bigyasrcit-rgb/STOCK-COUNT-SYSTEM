@@ -1659,7 +1659,7 @@ function _pharmacyAuditMarkerFromFinal(sku,source,confirmedAt,confirmedTimestamp
   return {sku,status,auditStatus:status==='pass'?'approved':'stock_adjustment',initialStatus:'audit',
     auditor:currentUser||'',confirmedAt,confirmedBy:currentUser||'',timestamp:confirmedTimestamp||confirmedAt,
     recheckQty:qty,recheckBy:source?.recheckBy||currentUser||'',recheckAt:source?.recheckAt||confirmedAt,
-    recheckSystemQty:baseSys,recheckR01Version:source?.recheckR01Version||'',
+    recheckSystemQty:baseSys,recheckR01Version:source?.recheckR01Version||'',backorder:!!source?.backorder,
     soldQty:Number(calc.soldQty||0),inboundQty:Number(calc.inboundQty||0),r16103Qty:Number(calc.r16103Qty||0),
     effectiveQty:Number(calc.effectiveQty||0),systemQty:baseSys,
     r01Version:versions.r01Version||state.r01Version||'',r16Version:versions.r16Version||state.r16DetailVersion||'',
@@ -1680,7 +1680,7 @@ function _applyPharmacyAuditMarkersToState(){
     // reopen marker = สั่งล้างยอดรีเช็คโดยเจตนา ห้ามกู้ draft เดิมกลับ (ไม่งั้นกดปุ่ม ↺ แล้วยอดเก่าเด้งกลับ)
     const keepDraft=marker.status==='audit'&&!marker.reopenedAt&&sd.pharmacyAuditCountConfirmedAt&&
       sd.pharmacyAuditCountConfirmedAt===(marker.countConfirmedAt||marker.confirmedAt||'')&&sd.recheckQty!=null;
-    const draft=keepDraft?{qty:sd.recheckQty,by:sd.recheckBy||'',at:sd.recheckAt||'',sys:sd.recheckSystemQty,r01v:sd.recheckR01Version||''}:null;
+    const draft=keepDraft?{qty:sd.recheckQty,by:sd.recheckBy||'',at:sd.recheckAt||'',sys:sd.recheckSystemQty,r01v:sd.recheckR01Version||'',backorder:!!sd.backorder}:null;
     if(marker.countedQty!=null)sd.countedQty=Number(marker.countedQty);
     sd.status=marker.status;sd.auditStatus=marker.auditStatus||(marker.status==='audit'?'pending':marker.status==='pass'?'approved':'stock_adjustment');
     sd.initialStatus=marker.initialStatus||'audit';sd.scannedBy=marker.scannedBy||sd.scannedBy||'';
@@ -1695,19 +1695,20 @@ function _applyPharmacyAuditMarkersToState(){
     const _setRecheckSys=v=>{const n=Number(v);if(Number.isFinite(n))sd.recheckSystemQty=n;else delete sd.recheckSystemQty;};
     if(marker.status==='audit'){
       sd.auditor='';sd.timestamp=marker.countTimestamp||marker.timestamp||sd.timestamp||'';
-      if(marker.recheckQty!=null){sd.recheckQty=Number(marker.recheckQty);sd.recheckBy=marker.recheckBy||'';sd.recheckAt=marker.recheckAt||'';_setRecheckSys(marker.recheckSystemQty);sd.recheckR01Version=marker.recheckR01Version||'';}
-      else if(draft){sd.recheckQty=draft.qty;sd.recheckBy=draft.by;sd.recheckAt=draft.at;_setRecheckSys(draft.sys);sd.recheckR01Version=draft.r01v;}
-      else{delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;delete sd.recheckSystemQty;delete sd.recheckR01Version;}
+      if(marker.recheckQty!=null){sd.recheckQty=Number(marker.recheckQty);sd.recheckBy=marker.recheckBy||'';sd.recheckAt=marker.recheckAt||'';_setRecheckSys(marker.recheckSystemQty);sd.recheckR01Version=marker.recheckR01Version||'';if(marker.backorder)sd.backorder=true;else delete sd.backorder;}
+      else if(draft){sd.recheckQty=draft.qty;sd.recheckBy=draft.by;sd.recheckAt=draft.at;_setRecheckSys(draft.sys);sd.recheckR01Version=draft.r01v;if(draft.backorder)sd.backorder=true;else delete sd.backorder;}
+      else{delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;delete sd.recheckSystemQty;delete sd.recheckR01Version;delete sd.backorder;}
     }else if(marker.auditor){
       sd.auditor=marker.auditor||'';sd.timestamp=marker.timestamp||sd.timestamp||'';
       sd.recheckQty=Number(marker.recheckQty||0);sd.recheckBy=marker.recheckBy||'';sd.recheckAt=marker.recheckAt||'';
+      if(marker.backorder)sd.backorder=true;else delete sd.backorder;
       _setRecheckSys(marker.recheckSystemQty);sd.recheckR01Version=marker.recheckR01Version||'';
       sd.pharmacyAuditConfirmedAt=marker.confirmedAt||'';
     }else{
       // R16 re-calculation อาจปิด Audit เป็น Pass โดยยังไม่ใช่งาน Verify ของเภสัช
       sd.auditor='';sd.timestamp=marker.countTimestamp||marker.timestamp||sd.timestamp||'';
-      if(marker.recheckQty!=null){sd.recheckQty=Number(marker.recheckQty);sd.recheckBy=marker.recheckBy||'';sd.recheckAt=marker.recheckAt||'';_setRecheckSys(marker.recheckSystemQty);sd.recheckR01Version=marker.recheckR01Version||'';}
-      else{delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;delete sd.recheckSystemQty;delete sd.recheckR01Version;}
+      if(marker.recheckQty!=null){sd.recheckQty=Number(marker.recheckQty);sd.recheckBy=marker.recheckBy||'';sd.recheckAt=marker.recheckAt||'';_setRecheckSys(marker.recheckSystemQty);sd.recheckR01Version=marker.recheckR01Version||'';if(marker.backorder)sd.backorder=true;else delete sd.backorder;}
+      else{delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;delete sd.recheckSystemQty;delete sd.recheckR01Version;delete sd.backorder;}
     }
     changed.push(sku);
   }
@@ -1733,13 +1734,13 @@ async function _backfillPharmacyAuditMarkersFromLocal(){
         countConfirmedAt:sd.pharmacyAuditCountConfirmedAt||sd.countConfirmedAt||sd.firstScanAt||sd.timestamp||'',
         confirmedAt:sd.pharmacyAuditCountConfirmedAt||sd.countConfirmedAt||sd.firstScanAt||sd.timestamp||'',confirmedBy:sd.countConfirmedBy||'',
         recheckQty:sd.recheckQty,recheckBy:sd.recheckBy||'',recheckAt:sd.recheckAt||'',
-        recheckSystemQty:sd.recheckSystemQty,recheckR01Version:sd.recheckR01Version||'',
+        recheckSystemQty:sd.recheckSystemQty,recheckR01Version:sd.recheckR01Version||'',backorder:!!sd.backorder,
         r01Version:sd.r01Version||state.r01Version||'',r16Version:sd.r16Version||'',r16_103Version:sd.r16_103Version||''});
     }else if(sd.auditor&&sd.initialStatus==='audit'&&['pass','stock_adjustment'].includes(sd.status)){
       markers.push({sku,status:sd.status,auditStatus:sd.auditStatus||'approved',initialStatus:'audit',auditor:sd.auditor,
         confirmedAt:sd.pharmacyAuditConfirmedAt||sd.timestamp||'',confirmedBy:sd.auditor,recheckQty:Number(sd.recheckQty||0),
         recheckBy:sd.recheckBy||sd.auditor,recheckAt:sd.recheckAt||sd.timestamp||'',timestamp:sd.timestamp||'',
-        recheckSystemQty:sd.recheckSystemQty,recheckR01Version:sd.recheckR01Version||'',
+        recheckSystemQty:sd.recheckSystemQty,recheckR01Version:sd.recheckR01Version||'',backorder:!!sd.backorder,
         countedQty:Number(sd.countedQty||0),scannedBy:sd.scannedBy||'',firstScanAt:sd.firstScanAt||'',barcode:sd.barcode||'',location:sd.location||'',
         soldQty:Number(sd.soldQty||0),inboundQty:Number(sd.inboundQty||0),r16103Qty:Number(sd.r16103Qty||0),
         effectiveQty:Number(sd.effectiveQty||0),systemQty:Number(sd.systemQty??state.skuMap.get(sku)?.systemQty??0),
@@ -2711,7 +2712,7 @@ function resetStaleScanningItems(){
     if(sd.timestamp.substring(0,10)>=today)continue; // สแกนวันนี้ → ไม่แตะ
     sd.countedQty=0;sd.status='pending';sd.timestamp='';sd.barcode='';
     sd.scans=[];sd.scannedBy='';sd.auditor='';sd.auditStatus='pending';
-    delete sd.soldQty;delete sd.rawCountedQty;delete sd.initialStatus;delete sd.recheckQty;delete sd.recheckBy;delete sd.noStock;delete sd.countAt;
+    delete sd.soldQty;delete sd.rawCountedQty;delete sd.initialStatus;delete sd.recheckQty;delete sd.recheckBy;delete sd.noStock;delete sd.countAt;delete sd.backorder;
     staleSkus.push(sku);n++;
   }
   _removeWhCountInboxItems(staleSkus);
@@ -3894,6 +3895,8 @@ let _cachedTotalSku=0;
 // ⚠️ อ่าน G จาก state.r01Data (ค่าดิบ) ห้ามใช้ skuMap.systemQty — สาขายา clamp negSys เป็น 0 ไปแล้ว
 //    ถ้าใช้ skuMap จะแยก "G=0 จริง" กับ "G ติดลบ (ขายของขาด)" ไม่ออก
 let _countableSkus=new Set();
+// SKU → G ดิบจาก R01 (ไม่ผ่าน clamp) — ใช้โดย _rawSystemQty()/_canEnterZeroOnly() · สร้างพร้อมกันใน _rebuildCountableSkus()
+let _r01RawQty=new Map();
 // PBM มีผลกับตัวหาร Progress แล้ว → ทุกจุดที่ PBM/R01 เปลี่ยนต้องเรียกอันนี้ แม้ R05 ยังมาไม่ถึง
 // (rebuildMaps() ทั้งก้อนเรียกไม่ได้ตอน R05 ยังไม่มา เพราะมันเคลียร์ skuMap/barcodeMap แล้ว early-return)
 function _rebuildCountableSkus(){
@@ -3901,6 +3904,7 @@ function _rebuildCountableSkus(){
   const nonCountSkus=new Set();const qtyMap=new Map();
   // `nc` = หมวดใน R01 คอลัมน์ P ที่ไม่ใช่สินค้าคงคลัง (ติดธงตอน loadR01) — sticky: แถวไหนติดธง SKU นั้นไม่นับ
   state.r01Data.forEach(r=>{qtyMap.set(r.colE,r.systemQty);if(r.nc)nonCountSkus.add(r.colE);});
+  _r01RawQty=qtyMap;   // เก็บ G ดิบไว้ให้ _rawSystemQty() — ห้ามอ่านจาก skuMap เพราะสาขายา clamp negSys เป็น 0
   // `cat` มีเฉพาะแถว A/B/C (loadProductMaster) — ไฟล์เก่าไม่มีเลย → set ว่าง → เงื่อนไขนี้ไม่ทำอะไร
   const abcSkus=new Set();
   state.productMasterData.forEach(r=>{if(r.cat)abcSkus.add(r.sku);});
@@ -4143,6 +4147,41 @@ function _canEnterCountQtyPrice(price){
 }
 function _canEnterCountQty(skuInfo){
   return !!skuInfo&&_canEnterCountQtyPrice(skuInfo.unitPrice);
+}
+// ── ยกเว้นกฎราคาเฉพาะการกรอก "0" บนสินค้าที่ระบบว่าง (G ≤ 0) — ส.ค. 2026 ──
+// ปัญหา: กติกา A/B/C (PBM Col D) ดึงสินค้า G=0 เข้าตัวหาร Progress แต่ของพวกนี้ "ชั้นว่างจริง" เป็นเคสปกติ
+// จึงสแกนไม่ได้ (ไม่มีของให้ยิง) และปุ่ม 🚫 ก็ติดเงื่อนไข systemQty>0 → ค้าง pending ถาวร Progress ไม่ถึง 100%
+// ทางออก: ให้กรอกได้ แต่ **รับเฉพาะค่า 0 เท่านั้น**
+// เหตุผลที่ไม่ขัดเจตนากฎราคา: กฎมีไว้กันพิมพ์เลขผิดแล้ว "ยอดพอง" บนของแพง — การกรอก 0 ทำให้ยอดพองไม่ได้เลย
+// ของแพงที่มีของจริงบนชั้น ยังต้องสแกนทีละชิ้นเหมือนเดิม (กรอกเลขอื่นยังถูกปฏิเสธ)
+// ⚠️ ต้องอ่าน G ดิบจาก _r01RawQty ห้ามใช้ skuMap.systemQty — สาขายา clamp negSys เป็น 0 ไปแล้ว
+//    ถ้าอ่านจาก skuMap จะแยก "G=0 จริง" กับ "G ติดลบที่ถูก clamp" ไม่ออก
+function _rawSystemQty(sku){
+  const v=_r01RawQty.get(sku);
+  return Number.isFinite(v)?v:null;
+}
+function _canEnterZeroOnly(skuInfo){
+  if(!skuInfo)return false;
+  const g=_rawSystemQty(skuInfo.sku);
+  return g!==null&&g<=0;   // G=0 (ชั้นว่างตามระบบ) และ G<0 (negSys — ขายของขาด) ทั้งคู่ปิดงานด้วย 0 ได้
+}
+// จุดที่ "ตรวจค่าที่กรอก" ใช้ตัวนี้ · จุดที่ "ตัดสินว่าจะแสดงช่อง input ไหม" ใช้ _canEnterCountQty||_canEnterZeroOnly
+// ทั้งสองชุดต้องตรงกันเสมอ ไม่งั้นช่องจะโผล่ให้พิมพ์แล้วค่อยเด้งปฏิเสธ (กฎเดิมใน CLAUDE.md)
+function _canEnterCountQtyValue(skuInfo,v){
+  if(_canEnterCountQty(skuInfo))return true;
+  return _canEnterZeroOnly(skuInfo)&&Number(v)===0;
+}
+// ── "ค้างส่งลูกค้า" — เภสัชปิดงานสินค้าที่ระบบไม่มีของ โดยไม่ออกใบปรับสต็อก (ส.ค. 2026) ──
+// ยอดติดลบเกิดเพราะการขายถูกบันทึกไปแล้วแต่ของยังไม่เข้า = เป็นหนี้ลูกค้าอยู่จริง
+// ถ้าดันยอดกลับเป็น 0 ด้วยใบปรับสต็อก = ลบร่องรอยหนี้ทิ้ง แล้วส่วนต่างจะไปโผล่ใหม่ตอนของเข้า
+//   ปรับเป็น 0 → คลังส่ง 5 → ระบบ 5 · ของจริง 5 → จ่ายของค้าง 2 (ขายไปแล้ว) → ระบบ 5 · ของจริง 3 = เพี้ยน
+//   ปล่อย −2 ไว้ → คลังส่ง 5 → ระบบ 3 · ของจริง 5 → จ่ายของค้าง 2 → ระบบ 3 · ของจริง 3 = ตรง
+// จึงต้องมีทางให้เภสัช "ปิดงานโดยไม่แตะยอด" — ตัดสินด้วยดุลยพินิจ ระบบไม่มีข้อมูลใบสั่งค้างของลูกค้า
+function _canMarkBackorder(sku,sd){
+  if(!sd||sd.status!=='audit'||sd.auditor)return false;
+  if(!_isPharmacyBranch()||currentRole!=='pharmacist')return false;
+  const g=_rawSystemQty(sku);   // ค่าดิบจาก R01 — ห้ามใช้ skuMap.systemQty
+  return g!==null&&g<=0;        // เฉพาะที่ระบบไม่มีของ (ติดลบ หรือ 0)
 }
 // price = ราคาที่ใช้ตัดสินจริง (ของบาร์โค้ดที่ยิง หรือของหน่วยเล็กสุด) — null/ไม่มี = หาราคาไม่เจอ
 function _rejectRestrictedCountQty(price){
@@ -4415,7 +4454,9 @@ async function _confirmPharmacyBatched(){
 // เทียบยอดรีเช็คของ audit item ว่าไม่เปลี่ยนระหว่างยืนยัน (คู่ขนานกับ _sameBranchCount ของ Confirm รอบแรก)
 function _sameBranchRecheck(a,b){
   return !!a&&!!b&&a.status==='audit'&&b.status==='audit'&&!a.auditor&&!b.auditor&&
-    Number(a.recheckQty)===Number(b.recheckQty)&&(a.recheckBy||'')===(b.recheckBy||'')&&(a.recheckAt||'')===(b.recheckAt||'');
+    Number(a.recheckQty)===Number(b.recheckQty)&&(a.recheckBy||'')===(b.recheckBy||'')&&(a.recheckAt||'')===(b.recheckAt||'')&&
+    // ธง backorder พลิกผลจาก stock_adjustment เป็น pass — ถ้าไม่เทียบ คนกดปุ่มกลางงาน Confirm จะไม่ถูกจับว่าเปลี่ยน
+    (!!a.backorder)===(!!b.backorder);
 }
 // เภสัชยืนยัน Audit Verify แบบ batched — Desktop เท่านั้น (PDA สแกนรีเช็คเข้า sd.recheckQty แล้ว sync ขึ้น session)
 // เหตุผลที่ต้องเป็น Desktop: getSoldQtyBefore/getInboundQtyBefore ต้องใช้ R16 raw timeline (r16RawMap/r16InboundRawMap)
@@ -4919,10 +4960,28 @@ function _recheckBaselineSystemQty(sku,sd){
 function _addRecheckScanQty(sku,sd,addQty){
   const total=(Number(sd.recheckQty)||0)+addQty;
   sd.recheckQty=total;sd.recheckBy=currentUser||'';sd.recheckAt=new Date().toISOString();sd.manualEditAt=Date.now();
+  // สแกนทับของที่เคยมาร์คค้างส่ง = เภสัชเจอของจริงแล้ว → ถอนธง ให้กลับไปตัดสินด้วยสูตรปกติ
+  delete sd.backorder;
   _freezeRecheckBaseline(sku,sd);
   _markSkuDirty(sku);
   scheduleSave();
   return total;
+}
+// มาร์ค "ค้างส่งลูกค้า" — เดินรางเดียวกับ "รีเช็คได้ 0" ทุกประการ ต่างแค่ธง backorder ที่พลิกผลตอน Confirm
+// ไม่บันทึกจำนวนปลอม: recheckQty=0 คือของจริงบนชั้น (ว่าง) ธงเป็นตัวบอกว่า "ว่างเพราะค้างส่ง ไม่ใช่ของหาย"
+function markBackorderItem(sku){
+  if(_blockScanForBranchConfirm())return;
+  const sd=state.scanData.get(sku);
+  if(!_canMarkBackorder(sku,sd)){toast('รายการนี้มาร์คค้างส่งไม่ได้','warn');return;}
+  const si=state.skuMap.get(sku);
+  if(!confirm(`${sku}\n${si?.productName||''}\n\nยอดระบบ ${_rawSystemQty(sku)} — ยืนยันว่าเป็นของค้างส่งลูกค้า?\n\nรายการนี้จะผ่าน (Pass) โดยไม่ออกใบปรับสต็อก และยอดติดลบจะคงไว้ให้หายเองตอนของเข้า`))return;
+  sd.recheckQty=0;sd.recheckBy=currentUser||'';sd.recheckAt=new Date().toISOString();
+  sd.backorder=true;sd.manualEditAt=Date.now();
+  _freezeRecheckBaseline(sku,sd);
+  _markSkuDirty(sku);
+  const e=scanListMap.get(sku);if(e)e.totalQty=0;
+  toast(`${sku}: มาร์คค้างส่งลูกค้าแล้ว — กด "ยืนยัน" บน Desktop เพื่อปิดงาน`,'info',4000);
+  scheduleSave();renderAuditVerifyTable();updatePharmacistAuditConfirmBtn();scheduleScanListRender();
 }
 
 function processPharmacistAuditScan(){
@@ -5379,7 +5438,7 @@ function renderScanList(){
       <div class="scan-row-sku" title="${entry.sku}"><span class="sku-text">${entry.sku}</span>${entry.status==='scanning'?`<button class="btn-remove-row btn-remove-sku" onclick="removeScanItem('${entry.sku}')" title="ลบ / สแกนใหม่">✕</button>`:(entry.status==='audit'&&(whStaffEdit||pharmRecheckEdit))?`<button class="btn-remove-row btn-remove-sku" onclick="resetRecheckItem('${entry.sku}')" title="รีเซ็ตรีเช็ค / สแกนนับใหม่">✕</button>`:''}</div>
       <div class="scan-row-bc" title="${bcText}">${bcText}</div>
       <div class="scan-row-pn"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pn}</span></div>
-      <div class="scan-row-qty" style="color:${cls}">${entry.status==='scanning'?(_canEnterCountQty(si)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onchange="updateInlineQty('${entry.sku}',this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}"/>`:`<span style="font-weight:700">${entry.totalQty}</span>`):entry.status==='unknown'?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.status==='audit'&&whStaffEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" onblur="updateRecheckInlineQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&pharmRecheckEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}" onblur="updatePharmacyRecheckQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&(currentRole==='pharmacist'||currentRole==='supervisor'||noEditPda))?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.totalQty>10?`${entry.totalQty}`:'')}</div>
+      <div class="scan-row-qty" style="color:${cls}">${entry.status==='scanning'?((_canEnterCountQty(si)||_canEnterZeroOnly(si))?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onchange="updateInlineQty('${entry.sku}',this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}"/>`:`<span style="font-weight:700">${entry.totalQty}</span>`):entry.status==='unknown'?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.status==='audit'&&whStaffEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" onblur="updateRecheckInlineQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&pharmRecheckEdit)?`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}" onblur="updatePharmacyRecheckQty('${entry.sku}',this.value)"/>`:(entry.status==='audit'&&(currentRole==='pharmacist'||currentRole==='supervisor'||noEditPda))?`<span style="font-weight:700">${entry.totalQty}</span>`:(entry.totalQty>10?`${entry.totalQty}`:'')}</div>
       ${showSysQty?`<div class="scan-row-sysqty" style="text-align:center;font-size:0.78rem;color:var(--text2);padding:0 6px;">${si?.systemQty??''}</div>`:''}
       ${showLoc?`<div class="scan-row-loc" style="text-align:center;font-size:0.78rem;color:var(--text2);padding:0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${state.locationMap.get(entry.sku)||'—'}</div>`:''}
       <div class="scan-row-status"><span class="pill ${getPillClass(entry.status)}">${label}</span></div>
@@ -5408,7 +5467,8 @@ function patchScanRow(key){
     }
   }
   if(entry.status==='scanning'){
-    if(_canEnterCountQty(si)){
+    // ต้องตรงกับ renderScanList() และ updateInlineQty() — G≤0 ยังแสดงช่องให้แก้ค่าได้
+    if(_canEnterCountQty(si)||_canEnterZeroOnly(si)){
       const input=qtyCell.querySelector('.inline-qty-input');
       if(input){if(document.activeElement!==input)input.value=entry.totalQty;}
       else{qtyCell.innerHTML=`<input type="number" class="inline-qty-input" value="${entry.totalQty}" min="0" onchange="updateInlineQty('${entry.sku}',this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();const s=document.getElementById('scanInput');if(s)s.focus();}"/>`;}
@@ -5434,7 +5494,8 @@ function patchScanRow(key){
 function updateInlineQty(sku,v){
   if(_blockScanForBranchConfirm())return;
   const skuInfo=state.skuMap.get(sku);
-  if(!_canEnterCountQty(skuInfo)){_rejectRestrictedCountQty(skuInfo?.unitPrice);return;}
+  // G ≤ 0 ยอมรับเฉพาะค่า 0 (ยกเว้นกฎราคา) · ค่าอื่นบนของแพงยังถูกปฏิเสธเหมือนเดิม
+  if(!_canEnterCountQtyValue(skuInfo,v)){_rejectRestrictedCountQty(skuInfo?.unitPrice);return;}
   const q=parseFloat(v);if(isNaN(q)||q<0)return;
   const sd=state.scanData.get(sku);if(!sd||sd.status!=='scanning')return;
   sd.countedQty=q;sd.manualEditAt=Date.now();
@@ -5495,7 +5556,8 @@ function updatePharmacyRecheckQty(sku,v){
 function updatePopupQty(sku,v){
   if(_blockScanForBranchConfirm())return;
   const skuInfo=state.skuMap.get(sku);
-  if(!_canEnterCountQty(skuInfo)){_rejectRestrictedCountQty(skuInfo?.unitPrice);return;}
+  // G ≤ 0 ยอมรับเฉพาะค่า 0 (ยกเว้นกฎราคา) · ค่าอื่นบนของแพงยังถูกปฏิเสธเหมือนเดิม
+  if(!_canEnterCountQtyValue(skuInfo,v)){_rejectRestrictedCountQty(skuInfo?.unitPrice);return;}
   const q=parseFloat(v);if(isNaN(q)||q<0)return;
   const sd=state.scanData.get(sku);if(!sd)return;
   if(['pass','audit','audit_check','stock_adjustment'].includes(sd.status))return;
@@ -5527,7 +5589,7 @@ function removeScanItem(sku){
   const sd=state.scanData.get(sku);if(!sd)return;
   sd.countedQty=0;sd.status='pending';sd.timestamp='';sd.barcode='';sd.manualEditAt=Date.now();
   sd.scans=[];sd.scannedBy='';sd.auditor='';sd.auditStatus='pending';
-  delete sd.soldQty;delete sd.rawCountedQty;delete sd.initialStatus;delete sd.recheckQty;delete sd.noStock;delete sd.countAt;
+  delete sd.soldQty;delete sd.rawCountedQty;delete sd.initialStatus;delete sd.recheckQty;delete sd.noStock;delete sd.countAt;delete sd.backorder;
   scanListMap.delete(sku);
   _removeWhCountInboxItems([sku]);
   // ยกเลิก debounce + ล้าง scanInput เพื่อป้องกัน barcode ที่ค้างใน input จาก PDA ถูก submit หลัง remove
@@ -5555,7 +5617,7 @@ function removeScanItem(sku){
 function resetRecheckItem(sku){
   if(_blockScanForBranchConfirm())return;
   const sd=state.scanData.get(sku);if(!sd||sd.status!=='audit')return;
-  delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;
+  delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;delete sd.backorder;
   sd.manualEditAt=Date.now();
   _removeWhRecheckInboxItems([sku]); // guard branch WH ในตัว — เรียกจากสาขายาไม่มีผล
   const e=scanListMap.get(sku);if(e)e.totalQty=0;
@@ -5785,7 +5847,8 @@ function renderPopupTable(){
     const dt=r.isDel?'<span class="tag-del">DEL</span>':'';
     const qc=sd.status==='pass'||sd.status==='audit_check'?'var(--green)':'var(--text)';
     const bcs=barcodes.length>22?barcodes.slice(0,22)+'…':barcodes;
-    const canEdit=(sd.status==='pending'||sd.status==='scanning')&&_canEnterCountQty(info);
+    // ต้องตรงกับ updatePopupQty() — G≤0 แสดงช่องให้กรอกได้ แต่รับเฉพาะ 0
+    const canEdit=(sd.status==='pending'||sd.status==='scanning')&&(_canEnterCountQty(info)||_canEnterZeroOnly(info));
     const qtyCell=canEdit?`<input type="number" class="popup-qty-input" value="${sd.countedQty}" min="0" onchange="updatePopupQty('${sku}',this.value)"/>`:`<span style="color:${qc};font-weight:700">${sd.countedQty}</span>`;
     const scannedByCell=sd.scannedBy?`<span style="font-size:0.74rem;color:var(--text2);font-weight:600;">${sd.scannedBy}</span>`:'<span style="color:var(--text3);">—</span>';
     const locCell=isWhSup?`<td style="font-family:'Inter',sans-serif;font-size:0.78rem;color:var(--text2);text-align:center;">${state.locationMap.get(sku)||'—'}</td>`:'';
@@ -6140,7 +6203,8 @@ function saveAuditLogToFirestore(){
 
       status:sd.status,
       auditor:sd.auditor||'',
-      recheckQty:sd.recheckQty!==undefined?sd.recheckQty:null
+      recheckQty:sd.recheckQty!==undefined?sd.recheckQty:null,
+      backorder:!!sd.backorder
     });
   }
   if(!items.length)return;
@@ -7045,12 +7109,12 @@ async function reopenPharmacyAudit(sku){
       reopenedAt:at,reopenedBy:currentUser||'',confirmedAt:at,countConfirmedAt:at,confirmedBy:currentUser||'',
       countedQty:Number(sd.countedQty||0),scannedBy:sd.scannedBy||'',countTimestamp:countTs,timestamp:countTs,
       firstScanAt:sd.firstScanAt||countTs,barcode:sd.barcode||'',location:sd.location||'',
-      recheckQty:null,recheckBy:'',recheckAt:'',recheckSystemQty:null,recheckR01Version:'',
+      recheckQty:null,recheckBy:'',recheckAt:'',recheckSystemQty:null,recheckR01Version:'',backorder:false,
       soldQty:0,inboundQty:0,r16103Qty:0,effectiveQty:Number(sd.countedQty||0),systemQty:Number(si.systemQty||0),
       r01Version:state.r01Version||'',r16Version:state.r16DetailVersion||'',r16_103Version:state.r16_103DetailVersion||''}]);
   }catch(e){console.warn('[reopen audit]',e.message);beepError();toast('เปิดรีเช็คใหม่ไม่สำเร็จ: '+e.message,'error');return;}
   sd.status='audit';sd.auditStatus='pending';sd.auditor='';sd.timestamp=countTs;
-  delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;delete sd.recheckSystemQty;delete sd.recheckR01Version;
+  delete sd.recheckQty;delete sd.recheckBy;delete sd.recheckAt;delete sd.recheckSystemQty;delete sd.recheckR01Version;delete sd.backorder;
   delete sd.effectiveQty;delete sd.pharmacyAuditConfirmedAt;
   sd.manualEditAt=Date.now();
   if(scanListMap.has(sku)){const e=scanListMap.get(sku);e.status='audit';e.totalQty=0;}
@@ -7072,7 +7136,12 @@ function confirmAuditVerifyItem(sku,silent=false,deferSync=false){
   const _d=new Date();
   const ts=`${_d.getFullYear()}-${String(_d.getMonth()+1).padStart(2,'0')}-${String(_d.getDate()).padStart(2,'0')} ${String(_d.getHours()).padStart(2,'0')}:${String(_d.getMinutes()).padStart(2,'0')}:${String(_d.getSeconds()).padStart(2,'0')}`;
   let result;
-  if(effectiveQty===baseSys){
+  if(sd.backorder){
+    // เภสัชตัดสินว่าเป็นของค้างส่งลูกค้า → ปิดงานโดยไม่แตะยอด (ยอดติดลบต้องคงไว้ ดู _canMarkBackorder)
+    // เช็คก่อนสูตร เพราะ effectiveQty(0) ไม่มีทางเท่า baseSys ที่ติดลบ — ถ้าปล่อยลงไปจะได้ stock_adjustment
+    sd.status='pass';sd.auditStatus='approved';result='pass';
+    if(!silent)toast(`📦 ${sku} ค้างส่งลูกค้า → Pass (ไม่ออกใบปรับสต็อก)`,'success');
+  }else if(effectiveQty===baseSys){
     sd.status='pass';sd.auditStatus='approved';result='pass';
     if(!silent)toast(`✅ ${sku} ผ่าน → Pass`,'success');
   }else{
@@ -7141,9 +7210,11 @@ function renderAuditVerifyTable(){
     }).join('');
   } else {
     const isPda=window.innerWidth<=600;
+    // ปุ่ม "ค้างส่ง" โผล่เฉพาะเภสัชที่มีสิทธิ์ (ดู _canMarkBackorder) — กดได้ทั้ง PDA และ Desktop เหมือนการสแกนรีเช็ค
+    const canBackorder=_isPharmacyBranch()&&currentRole==='pharmacist';
     if(thead)thead.innerHTML=isPda
-      ?'<tr><th>SKU</th><th>Name</th><th style="text-align:center;">Recheck</th></tr>'
-      :'<tr><th>#</th><th>SKU</th><th>Barcode</th><th>Product Name</th><th style="text-align:center;">Count Qty</th><th style="text-align:center;">Recheck</th><th>เวลานับ</th></tr>';
+      ?'<tr><th>SKU</th><th>Name</th><th style="text-align:center;">Recheck</th>'+(canBackorder?'<th style="text-align:center;">ค้างส่ง</th>':'')+'</tr>'
+      :'<tr><th>#</th><th>SKU</th><th>Barcode</th><th>Product Name</th><th style="text-align:center;">Count Qty</th><th style="text-align:center;">Recheck</th><th>เวลานับ</th>'+(canBackorder?'<th style="text-align:center;">ค้างส่ง</th>':'')+'</tr>';
     const rows=[];
     for(const[sku,sd] of state.scanData.entries()){if(sd.status!=='audit')continue;const si=state.skuMap.get(sku);if(!si)continue;rows.push({sku,sd,si});}
     if(rc)rc.textContent=rows.length+' รายการ '+_auditTerm();
@@ -7151,21 +7222,31 @@ function renderAuditVerifyTable(){
     const confirmAllBtn=document.getElementById('avConfirmAllBtn');
     // สาขายา + PDA: ซ่อนปุ่มยืนยันในป็อปอัพ — ยืนยันได้เฉพาะ Desktop (ดู _confirmPharmacyAuditBatched)
     if(confirmAllBtn)confirmAllBtn.style.display=(hasAny&&!(_isPdaApp()&&_isPharmacyBranch()))?'':'none';
-    const colspan=isPda?3:7;
+    const colspan=(isPda?3:7)+(canBackorder?1:0);
     if(!rows.length){tbody.innerHTML=`<tr><td colspan="${colspan}" style="text-align:center;padding:40px;color:var(--text3)">ไม่มีรายการ ${_auditTerm()}</td></tr>`;return;}
     tbody.innerHTML=rows.map((r,i)=>{
       const{sku,sd,si}=r;
       const bc=si.barcodes.map(b=>b.barcode).join(', ');
       const bcShort=bc.length>22?bc.slice(0,22)+'…':bc;
       const avQty=sd.recheckQty;const hasScanned=avQty!=null;
-      const qtyCell=hasScanned
-        ?`<span style="font-weight:700;color:var(--accent);">${avQty}</span>`
-        :`<span style="color:var(--text3);">รอสแกน</span>`;
+      const qtyCell=sd.backorder
+        ?`<span style="font-weight:700;color:var(--purple);">ค้างส่ง</span>`
+        :hasScanned
+          ?`<span style="font-weight:700;color:var(--accent);">${avQty}</span>`
+          :`<span style="color:var(--text3);">รอสแกน</span>`;
+      // ถ้ามาร์คแล้วแสดงปุ่มถอน (ใช้ resetRecheckItem ตัวเดิม ซึ่งล้างธงให้ด้วย)
+      const boCell=!canBackorder?''
+        :sd.backorder
+          ?`<td style="text-align:center;"><button onclick="resetRecheckItem('${sku}')" title="ถอนการมาร์คค้างส่ง" style="border:1px solid rgba(107,63,160,0.4);background:rgba(107,63,160,0.10);color:var(--purple);padding:4px 10px;border-radius:8px;font-size:0.72rem;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;">✕ ถอน</button></td>`
+          :_canMarkBackorder(sku,sd)
+            ?`<td style="text-align:center;"><button onclick="markBackorderItem('${sku}')" title="ของค้างส่งลูกค้า — ผ่านโดยไม่ออกใบปรับสต็อก" style="border:1px solid rgba(107,63,160,0.4);background:rgba(107,63,160,0.08);color:var(--purple);padding:4px 10px;border-radius:8px;font-size:0.72rem;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;">📦 ค้างส่ง</button></td>`
+            : '<td style="text-align:center;color:var(--text3);">—</td>';
       if(isPda){
         return`<tr style="${hasScanned?'background:rgba(0,114,198,0.06);':''}">`
           +`<td class="ptd-sku">${sku}</td>`
           +`<td class="ptd-name">${si.productName}</td>`
           +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;">${qtyCell}</td>`
+          +boCell
           +`</tr>`;
       }
       return`<tr style="${hasScanned?'background:rgba(0,114,198,0.06);':''}">`
@@ -7176,6 +7257,7 @@ function renderAuditVerifyTable(){
         +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;font-weight:700;color:var(--text2);">${sd.countedQty}</td>`
         +`<td style="font-family:'Inter',sans-serif;font-size:0.82rem;text-align:center;">${qtyCell}</td>`
         +`<td style="font-family:'Inter',sans-serif;font-size:0.7rem;color:var(--text3);">${sd.firstScanAt||sd.timestamp||'—'}</td>`
+        +boCell
         +`</tr>`;
     }).join('');
   }
