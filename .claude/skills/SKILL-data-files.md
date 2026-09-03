@@ -164,6 +164,12 @@ logic: `isOutbound = !isWhBranch && match(OTFI) && colA==='1'`
 - `TRANDATE > scanTimestamp` → exclude
 - TRANDATE ว่าง/parse ไม่ได้ → exclude (conservative)
 
+⚠️ **โค้ดกรองแค่ขอบบน ไม่มีขอบล่าง — ช่วงเริ่มต้นถูกกำหนดโดย "ตัวไฟล์" ล้วนๆ** (เหมือนกันทั้ง `getInboundQtyBefore` / `getR16103QtyBefore`)
+ไฟล์ที่อัปต้องครอบ **[เวลาที่ export R01.102 ที่ใช้อยู่ → เวลานับล่าสุด]** เท่านั้น
+- ใส่รายการที่เกิด**ก่อน** R01 snapshot → ยอดพวกนั้นถูกบันทึกใน R01 อยู่แล้ว → **บวกซ้ำ** → `effectiveQty` พองเกิน → ตัดสินผิด
+- ใส่ไฟล์ที่เริ่ม**หลัง**เวลานับ (เช่นนับ 10/8 แต่อัป R16 ของวันนี้) → ทุก SKU คืน 0 → **การชดเชย R16 หายหมด** → ของที่เคย pass พลิกเป็น audit ยกกอง
+ไม่มี guard ในโค้ดสำหรับสองเคสนี้ — คนอัปไฟล์เป็นคนรับผิดชอบช่วงเวลาเอง
+
 `parseTranDate()` รองรับ:
 - `DD/MM/YYYY H:mm[:ss] [AM/PM]`
 - `DD-MM-YY H:mm[:ss] [AM/PM]` (เช่น `25-04-26 8:07`)
@@ -185,6 +191,15 @@ Debug: `console.log('[R16] TRANDATE col index:')` ใน browser Console
 3. `state.r16DateMismatch = true`
 
 กด Confirm ขณะ `r16DateMismatch === true` → `r16MismatchModal` ต้อง confirm ก่อน
+
+⚠️ **ธง `r16DateMismatch` กั้นแค่ Confirm รอบแรก (`validateAndProcess`, `_confirmWhCountItems`) เท่านั้น**
+`if(matched>0) await reEvaluateAuditItems();` ท้าย `loadR16()`/`loadR16_103()` **รันต่อทันทีโดยไม่ดูธงนี้** —
+อัปไฟล์ผิดช่วงแล้วสถานะ `audit`/`pass` ที่ยังไม่มี `auditor` จะถูกตัดสินใหม่ + เขียนลง `{branch}_pharmacy_audit_markers`
+และ `stock_audit_log` **ทันทีก่อนที่ใครจะเห็น toast เตือน** · ตัวเดียวที่กันไว้คือ `_isPreBaselineItem()` (freeze ของที่นับก่อน `_r01BaselineAt`)
+⇒ ก่อนอัป R16 ในรอบนับที่ค้างข้ามวัน ให้ตรวจก่อนว่ามีรายการที่นับ **หลัง** baseline ปนอยู่กี่ตัว:
+```js
+let n=0; for(const[,sd] of state.scanData) if(sd.status!=='pending' && !_isPreBaselineItem(sd)) n++;
+```
 
 ---
 

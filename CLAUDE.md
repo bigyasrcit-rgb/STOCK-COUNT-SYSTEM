@@ -380,6 +380,15 @@ Schema v2 deploy จริงครั้งแรก 24 ก.ค. 2026 (commit `
 - candidate = `status==='audit'` + มี `recheckQty` + ยังไม่มี `auditor`; audit ที่ยังไม่ได้สแกนคงสถานะเดิมรอรอบถัดไป
 - เหตุผลที่ต้องเป็น Desktop: `getSoldQtyBefore()`/`getInboundQtyBefore()` fallback เป็นยอดรวมทั้งช่วงถ้าเครื่องไม่มี R16 raw timeline (`r16RawMap`) → PDA ตัดสิน pass/stock_adjustment ผิดได้
 - เครื่องที่กำลังสแกน/กด ✕ เอง ต้องไม่ถูก cloud snapshot เก่า mirror ทับ — ใช้ `manualEditAt` + `MANUAL_EDIT_PROTECT_MS` ทั้งใน `_applyCloudScanData()` และ merge ของ `syncToFirestore()`
+- **ย้อนผลที่ Confirm แล้วมีทางเดียว: `reopenPharmacyAudit()` (ก.ย. 2026)** — เขียน marker `reopenedAt` ขึ้น cloud **ก่อน** แก้ local (`reopenedAt` เป็นทางเดียวที่ชนะ guard "final ชนะ audit เสมอ" ใน `_writePharmacyAuditMarkers`) แล้วล้าง `recheckQty/recheckBy/recheckAt/recheckSystemQty/backorder` และคืน `sd.timestamp` เป็นเวลานับรอบแรก
+  - ⛔ **`removeScanItem()` / แก้ `state.scanData` ตรงๆ ใช้ย้อนไม่ได้** — ไม่เขียน marker แล้ว `_applyPharmacyAuditMarkersToState()` **สร้าง `sd` ใหม่ให้เอง** เมื่อ SKU อยู่ใน `skuMap` แล้วทับ status กลับใน snapshot ถัดไป · ยอดที่นับหายฟรี
+  - ⛔ **PDA สแกนทับของที่ Confirm แล้วไม่ได้** — `handleBarcode` return ตั้งแต่ guard `!['pending','scanning'].includes(sd.status)` **ก่อน**บรรทัดบวก `countedQty` (ได้แค่ toast "สแกนและ Confirm ไปแล้ว") · ปุ่ม ✕ ก็ขึ้นเฉพาะแถว `scanning` ⇒ "ให้นับใหม่เฉพาะบาง SKU" ไม่มีในระบบ ทางเลือกมีแค่ `reopenPharmacyAudit` (→ `audit`) หรือ `startNewCount()` (ล้างทั้งสาขา)
+  - guard `sd.initialStatus!=='audit'` ทำให้ item ที่ `pass` ตั้งแต่ Count รอบแรกย้อนไม่ได้เลย · และ **`pass` ไม่โผล่ในแท็บไหนของ Audit Verify** (`_avFilter` มีแค่ `audit`/`stock_adj`) ⇒ ต้องหาจาก 📋 → ✅ Pass → **Export** (`exportExcel()` มีคอลัมน์ `SystemQty`) เพราะป็อปอัพซ่อนคอลัมน์นั้นบนสาขายา
+  - `tools/list-negative-confirmed.js` (ก.ย. 2026) — read-only survey วางใน Console แล้วเรียก `listNegativeConfirmed()` · **ไม่แตะ Firestore เลย** (อ่าน state ในหน่วยความจำ 0 reads) แยกกลุ่มให้ว่าตัวไหนมีปุ่ม ↺ อยู่แล้ว / ตัวไหนต้อง Console / ตัวไหน `initialStatus` ไม่ใช่ `audit` จึง reopen ไม่ได้ · คอลัมน์ `ฐานถูก_clamp` ชี้รายการที่ถูกตัดสินด้วยฐาน `0` สมัยยัง clamp
+- ⚠️ **ใบปรับสต็อกไม่เคารพ freeze ของ `_isPreBaselineItem` (ก.ย. 2026)** — `_buildAdjustDocRows()` คิด `diff = cnt − si.systemQty` จาก **`si.systemQty` ค่าสด** ขณะที่ตาราง Audit Verify แสดง `_recheckBaselineSystemQty()` (ค่าที่ freeze ตอนสแกน) พร้อมวงเล็บ `(ตอนนี้ N)`
+  - ต่างกันโดยตั้งใจ — **ตัวเลขบนใบคือค่าที่ส่งเข้าระบบจริง ให้เชื่อใบ** ไม่ใช่ Diff บนจอ
+  - แต่ถ้ารอบนับค้างข้ามการอัป R01 (`si.systemQty` ขยับไปแล้ว) **ใบจะเทียบยอดนับเก่ากับยอดระบบใหม่ = ข้ามช่วงเวลา** ต้อง reopen + รีเช็คใหม่ให้ `_freezeRecheckBaseline()` จับ R01 ปัจจุบันก่อนออกใบ
+  - ระบบ**ไม่มี** field `issuedAt`/`exportedAt` ที่ไหนเลย = ไม่มีอะไรกัน double-adjust ⇒ ห้ามย้อนสถานะหลังส่งใบเข้าระบบหลังบ้านแล้ว
 
 ### WH Count/Recheck
 
